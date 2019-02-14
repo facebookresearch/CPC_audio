@@ -10,6 +10,8 @@ import numpy as np
 import torchaudio
 import math
 
+import sys
+
 class AudioBatchDataset(Dataset):
 
     def __init__(self,
@@ -135,6 +137,7 @@ class PredictionNetwork(nn.Module):
         c = c.view(c.size(0), 1, c.size(1), c.size(2))
 
         out = (c*z).mean(dim=3)
+
         return out
 
 def train(pathDataset,
@@ -143,9 +146,9 @@ def train(pathDataset,
           nPredicts = 12,
           nInputs = 116,
           sizeSample = 160,
-          nUpdates = 3000,
-          negativeSamplingExt = 128,
-          negativeSamplingIn = 128):
+          nUpdates = 3000000,
+          negativeSamplingExt = 2048,
+          negativeSamplingIn = 1):
 
     # Build the dataset
     audioDataset = AudioBatchDataset(pathDataset,
@@ -163,13 +166,13 @@ def train(pathDataset,
 
     # Estimate the number of epochs to perform
     nWindows = len(audioDataset)
-    nEpoch = int(math.ceil(nWindows / nUpdates))
+    nEpoch = int(math.ceil(nUpdates/ nWindows))
 
     print("Dataset size: %d , running %d epochs" % (nWindows, nEpoch))
 
     # GPU
     device = torch.device("cuda:0")
-    n_devices = torch.cuda.device_count()
+    n_devices = 1#torch.cuda.device_count()
     batchSize = 8 * n_devices
 
     gEncoder = nn.DataParallel(gEncoder)
@@ -212,35 +215,44 @@ def train(pathDataset,
             encodedData = gEncoder(batchData).permute(2, 0, 1)
 
             #Data have now the following structure (seq, batchSize, nChannels)
+            #We are going to perform one prediction sequence per GPU
             gtPredictions = encodedData[:,:n_devices, :].view(-1, n_devices, hiddenEncoder)
             inputGar = encodedData[:-nPredicts, :n_devices, :].view(-1, n_devices, hiddenEncoder)
 
             cFeature = gGar(inputGar)
-
-            #Negative samples
-            negativeSamplesExt = encodedData[:, n_devices:, :].contiguous().view(-1, hiddenEncoder)
-            nNegativeExt = negativeSamplesExt.size(0)
 
             windowSize = inputGar.size(0)
             labelLoss = torch.zeros((windowSize * n_devices),
                                     dtype = torch.long,
                                     device = device)
 
+
+            #Negative samples
+            negativeSamplesExt = encodedData[:windowSize, n_devices:, :].contiguous().view(-1, hiddenEncoder)
+            nNegativeExt = negativeSamplesExt.size(0)
+
+            #print(negativeSamplesExt.size())
+
+            extIdx = np.random.randint(0, nNegativeExt,
+                                       size=(negativeSamplingExt * windowSize * n_devices))
+
+            negExt = negativeSamplesExt[extIdx].view(windowSize,
+                                                     negativeSamplingExt,
+                                                     n_devices,
+                                                     hiddenEncoder)
+
+            # We are quite unlinkely to pick the good samples randomly from
+            # the sequence
+            seqNegIdx = np.random.randint(0, windowSize,
+                                          size=(negativeSamplingIn* windowSize))
+            negSeq = inputGar[seqNegIdx].view(windowSize,
+                                              negativeSamplingIn,
+                                              n_devices,
+                                              hiddenEncoder)
+
+            totLoss = 0
+
             for k in range(1, nPredicts + 1):
-
-                extIdx = np.random.randint(0, nNegativeExt,
-                                           size=(negativeSamplingExt * windowSize * n_devices))
-
-                negExt = negativeSamplesExt[extIdx].view(windowSize,
-                                                         negativeSamplingExt,
-                                                         n_devices,
-                                                         hiddenEncoder)
-
-                # We are quite unlinkely to pick the good samples randomly from
-                # the sequence
-                seqNegIdx = np.random.randint(0, windowSize, size=(negativeSamplingIn* windowSize))
-
-                negSeq = inputGar[seqNegIdx].view(windowSize, negativeSamplingIn, n_devices, hiddenEncoder)
 
                 # Positive samples
                 if k < nPredicts:
@@ -251,15 +263,18 @@ def train(pathDataset,
                 posSeq = posSeq.view(windowSize, 1, n_devices, hiddenEncoder)
 
                 # Full sequence
-                fullSeq = torch.cat((posSeq, negSeq, negExt), dim =1)
+                fullSeq = torch.cat((posSeq, negExt), dim =1)
+                #print(posSeq.size(), fullSeq.size(), negExt.size())
 
                 # Predictions
                 predictions = wPrediction(cFeature, fullSeq, 0)
 
                 # Loss !
-                predictions = predictions.permute(0, 2, 1).contiguous().view(n_devices * windowSize, nTotSamples)
+                predictions = predictions.permute(0, 2, 1).contiguous().view(n_devices * windowSize,
+                                                                              -1)
+                #print(predictions.size())
                 lossK = lossCriterion(predictions, labelLoss)
-                lossK.backward(retain_graph = k < nPredicts)
+                totLoss += lossK
 
                 # Accuracy (train)
                 _, predLabel = predictions.max(1)
@@ -268,48 +283,30 @@ def train(pathDataset,
                 locLoss[k] += lossK.item()
                 locAcc[k] += accK
 
+                #sys.exit()
+
+            totLoss.backward()
             optimizer.step()
 
-            if step % logStep == (logStep -1):
+        locLoss /= step
+        locAcc /= step
 
-                locLoss /= logStep
-                locAcc /= logStep
+        strSteps = ['Step'] + [str(s) for s in range(1, nPredicts + 1)]
+        strLoss = ['Loss'] + ["{:10.6f}".format(s) for s in locLoss[1:]]
+        strAcc = ['Accuracy'] + ["{:10.6f}".format(s) for s in locAcc[1:]]
+        formatCommand = ' '.join(['{:>16}' for x in range(nPredicts + 1)])
 
-                strSteps = ['Step'] + [str(s) for s in range(1, nPredicts + 1)]
-                strLoss = ['Loss'] + ["{:10.6f}".format(s) for s in locLoss[1:]]
-                strAcc = ['Accuracy'] + ["{:10.6f}".format(s) for s in locAcc[1:]]
-                formatCommand = ' '.join(['{:>16}' for x in range(nPredicts + 1)])
+        print("")
+        print("".join(['-' for x in range(50)]))
+        print("Update %d :" % (epoch))
+        print(formatCommand.format(*strSteps))
+        print(formatCommand.format(*strLoss))
+        print(formatCommand.format(*strAcc))
+        print("".join(['-' for x in range(50)]))
 
-                print("")
-                print("".join(['-' for x in range(50)]))
-                print("Update %d :" % (step+1))
-                print(formatCommand.format(*strSteps))
-                print(formatCommand.format(*strLoss))
-                print(formatCommand.format(*strAcc))
-                print("".join(['-' for x in range(50)]))
-
-                locLoss[:] = 0
-                locAcc[:] = 0
+        locLoss[:] = 0
+        locAcc[:] = 0
 
 
 pathDB = '/private/home/mriviere/LibriSpeech/train-clean-100/'
 train(pathDB)
-
-#testDb = AudioBatchDataset('/private/home/mriviere/LibriSpeech/train-clean-100/')
-
-#inputWave = testDb[12].view(1, 1, -1)
-
-#testEncoder = EncoderNetwork()
-#testEncoded = testEncoder(inputWave)
-
-#testEncoded = testEncoded.permute(2, 0, 1)
-
-#testGar = AutoregressiveNetwork(512, 256)
-#testC = testGar(testEncoded)
-
-#testPrediction = PredictionNetwork(12, 256, 512)
-
-#c0 = testC[0, :]
-#z24 = testEncoded[24, :]
-
-#print(testPrediction(c0, z24, 2))
