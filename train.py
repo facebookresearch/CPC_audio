@@ -89,15 +89,20 @@ class AudioBatchDataset(Dataset):
     def __init__(self,
                  batchData,
                  offset =0,
-                 sizeWindow=2048):
+                 sizeWindow=2048,
+                 maxOffset = -1):
 
         self.batchData = batchData
         self.offset = offset
         self.sizeWindow = sizeWindow
+        self.maxOffset = maxOffset
+
+        if self.maxOffset <= 0:
+            self.maxOffset = len(self.batchData)
 
     def __len__(self):
 
-        return int(math.floor((len(self.batchData) - self.offset) / self.sizeWindow))
+        return int(math.floor((self.maxOffset - self.offset) / self.sizeWindow))
 
     def __getitem__(self, idx):
 
@@ -167,36 +172,96 @@ class PredictionNetwork(nn.Module):
 
             self.predictors.append(nn.Linear(dimOutputAR, dimOutputEncoder))
 
-    def forward(self, c, z, k):
+    def forward(self, c, candidates):
 
-        #TODO: bouger la boucle ici
-        # torch.nn.Bilinear ? Replace
-        c = self.predictors[k](c)
-        c = c.view(c.size(0), 1, c.size(1), c.size(2))
-        out = (c*z).mean(dim=3)
+        assert(len(candidates) == len(self.predictors))
+
+        out = []
+        for k in range(len(self.predictors)):
+
+            # torch.nn.Bilinear ? Replace
+            locC = self.predictors[k](c)
+            locC = locC.view(locC.size(0), 1, locC.size(1), locC.size(2))
+            outK = (locC*candidates[k]).mean(dim=3)
+
+            out.append(outK)
 
         return out
+
+###########################################
+# Sampling
+###########################################
+
+def getNegativeSamples(encodedData,
+                       windowSize,
+                       negativeSamplingExt,
+                       nGtSequence):
+
+    # Correct the number of negative samples to make sure that the number of
+    # indices to draw is lower than the available number of indices
+    batchSize = encodedData.size(1)
+    negativeSamplingExt = min(negativeSamplingExt, windowSize * (batchSize - nGtSequence))
+
+    # The ground truth data will always be the first item
+    labelLoss = torch.zeros((windowSize),
+                            dtype = torch.long,
+                            device = encodedData.device)
+
+    #Sample on all encoded units
+    dimEncoded = encodedData.size(2)
+    negativeSamplesExt = encodedData[:windowSize, nGtSequence:, :].contiguous().view(-1, dimEncoded)
+    nNegativeExt = negativeSamplesExt.size(0)
+
+    extIdx = np.random.randint(0, nNegativeExt,
+                               size=(negativeSamplingExt * windowSize * nGtSequence))
+
+    negExt = negativeSamplesExt[extIdx].view(windowSize,
+                                             negativeSamplingExt,
+                                             nGtSequence,
+                                             dimEncoded)
+
+    return negExt, labelLoss
+
+def getFullSamples(negativeSample,
+                   gtPredictions,
+                   nPredicts):
+
+    outputs = []
+    for k in range(1, nPredicts + 1):
+
+        # Positive samples
+        if k < nPredicts:
+            posSeq = gtPredictions[k:-(nPredicts-k)]
+        else:
+            posSeq = gtPredictions[k:]
+
+        posSeq = posSeq.view(posSeq.size(0), 1, posSeq.size(1), posSeq.size(2))
+
+        # Full sequence
+        fullSeq = torch.cat((posSeq, negativeSample), dim =1)
+        outputs.append(fullSeq)
+
+    return outputs
 
 ###########################################
 # Metric
 ###########################################
 
-def trainSpeakerSeprarability(dataset,
+def trainSpeakerSeprarability(audioData,
                               gEncoder,
                               gAR,
                               nEpoch,
+                              sizeAudioSample,
+                              nSamples,
                               trainEncoder = False):
 
     nSpeakers = dataset.getNSpeakers()
-    print("%d images, %d speakers" % (len(dataset), nSpeakers))
+    print("%d images, %d speakers" % (len(audioData), nSpeakers))
+
+    # Get
     linearSpeakerClassifier = nn.Linear(gEncoder.getDimOutput() * 8, nSpeakers)
 
     criterion = nn.CrossEntropyLoss()
-
-    sizeTrain = int(0.8 * len(audioDataset))
-    sizeVal =  len(audioDataset)  - sizeTrain
-    audioDatasetTrain, audioDatasetVal = torch.utils.data.random_split(dataset, [sizeTrain, sizeVal])
-    datasetMatchTrain = {True :audioDatasetTrain,False:audioDatasetVal }
 
     batchSize = 16
     n_devices = 2
@@ -212,7 +277,6 @@ def trainSpeakerSeprarability(dataset,
     linearSpeakerClassifier.to(device)
 
     optimizerClassifier = torch.optim.Adam(list(linearSpeakerClassifier.parameters()), lr=lr)
-
     g_params = list(gEncoder.parameters()) \
              + list(gAR.parameters())
 
@@ -233,7 +297,6 @@ def trainSpeakerSeprarability(dataset,
                                                      batch_size=batchSize,
                                                      shuffle=True,
                                                      num_workers=n_devices)
-
             nStep = 0
 
             for fullData in dataLoader:
@@ -259,7 +322,9 @@ def trainSpeakerSeprarability(dataset,
                 locAcc+= float((predictions == labels).sum().item()) / (labels.size(0))
 
                 optimizerClassifier.step()
-                optimizerG.step()
+
+                if trainEncoder:
+                    optimizerG.step()
                 nStep+=1
 
             locLoss /= nStep
@@ -318,7 +383,6 @@ def train(pathDataset,
 
     # Build the dataset
     audioData = AudioBatchData(pathDataset)
-    isTrainOffsets = {True: 0, False: int(len(audioData) * 0.2)}
 
     # Initialize the networks
     gEncoder = EncoderNetwork(sizeHidden = hiddenEncoder)
@@ -331,7 +395,7 @@ def train(pathDataset,
 
     # GPU
     device = torch.device("cuda:0")
-    n_devices = 1#torch.cuda.device_count()
+    n_devices = 2#torch.cuda.device_count()
     batchSize = 8 * n_devices
 
     gEncoder = nn.DataParallel(gEncoder)
@@ -372,14 +436,23 @@ def train(pathDataset,
         print("Starting epoch %d" % epoch)
         offset = random.randint(0, sizeWindow)
 
+        dataset = AudioBatchDataset(audioData,
+                                    offset = offset,
+                                    sizeWindow = sizeWindow)
+
+        sizeTrain = int(0.8 * len(dataset))
+        sizeVal = len(dataset) - sizeTrain
+        trainDataset, valDataset = torch.utils.data.random_split(dataset,
+                                                                 [sizeTrain,
+                                                                    sizeVal])
+
+        isTrainDataset = {True: trainDataset, False: valDataset}
+
         for isTrain in [True, False]:
 
             # TODO: faire passer au modele son statut train / val (source de bugs ex dropout)
-            dataset = AudioBatchDataset(audioData,
-                                        offset = offset + isTrainOffsets[isTrain],
-                                        sizeWindow = sizeWindow)
 
-            dataLoader = torch.utils.data.DataLoader(dataset,
+            dataLoader = torch.utils.data.DataLoader(isTrainDataset[isTrain],
                                                      batch_size=batchSize,
                                                      shuffle=True,
                                                      num_workers=n_devices)
@@ -408,55 +481,28 @@ def train(pathDataset,
 
                 windowSize = inputGar.size(0)
 
-                negativeSamplingExt = min(negativeSamplingExt, windowSize * (batchSize - n_devices))
-                labelLoss = torch.zeros((windowSize * n_devices),
-                                        dtype = torch.long,
-                                        device = device)
-
-                #Negative samples
-                negativeSamplesExt = encodedData[:windowSize, n_devices:, :].contiguous().view(-1, hiddenEncoder)
-                nNegativeExt = negativeSamplesExt.size(0)
-
-                extIdx = np.random.randint(0, nNegativeExt,
-                                           size=(negativeSamplingExt * windowSize * n_devices))
-
-                negExt = negativeSamplesExt[extIdx].view(windowSize,
-                                                         negativeSamplingExt,
-                                                         n_devices,
-                                                         hiddenEncoder)
+                negExt, labelLoss = getNegativeSamples(encodedData,
+                                                       windowSize,
+                                                       negativeSamplingExt,
+                                                       n_devices)
+                fullSeq = getFullSamples(negExt,
+                                         gtPredictions,
+                                         nPredicts)
                 totLoss = 0
+                predictions = wPrediction(cFeature, fullSeq)
 
-                #TODO: move the nPredicts in gtPredictions only
-                for k in range(1, nPredicts + 1):
+                for k, locPreds in enumerate(predictions):
+                    for gtSeq in range(n_devices):
+                        lossK= lossCriterion(locPreds[:, :, gtSeq], labelLoss)
+                        totLoss+=lossK
+                        locLoss[isTrain][k] += lossK.item()
 
-                    # Positive samples
-                    if k < nPredicts:
-                        posSeq = gtPredictions[k:-(nPredicts-k)]
-                    else:
-                        posSeq = gtPredictions[k:]
+                        _, predLabel = locPreds[:, :, gtSeq].max(1)
+                        _, worstLabel = locPreds[:, :, gtSeq].min(1)
+                        accK = float(torch.sum(predLabel == 0).item()) / (n_devices * windowSize)
 
-                    posSeq = posSeq.view(windowSize, 1, n_devices, hiddenEncoder)
-
-                    # Full sequence
-                    fullSeq = torch.cat((posSeq, negExt), dim =1)
-
-                    # Predictions
-                    predictions = wPrediction(cFeature, fullSeq, 0)
-
-                    # Loss !
-                    predictions = predictions.permute(0, 2, 1).contiguous().view(n_devices * windowSize,
-                                                                                 -1)
-                    lossK = lossCriterion(predictions, labelLoss)
-                    totLoss += lossK
-
-                    # Accuracy (train)
-                    _, predLabel = predictions.max(1)
-                    _, worstLabel = predictions.min(1)
-                    accK = float(torch.sum(predLabel == 0).item()) / (n_devices * windowSize)
-
-                    locLoss[isTrain][k] += lossK.item()
-                    locAcc[isTrain][k] += accK
-                    locMinMax[isTrain][k] += float(torch.sum(predLabel == worstLabel).item()) / (n_devices * windowSize)
+                        locAcc[isTrain][k] += accK
+                        locMinMax[isTrain][k] += float(torch.sum(predLabel == worstLabel).item()) / (n_devices * windowSize)
 
                 if isTrain:
                     totLoss.backward()
@@ -474,6 +520,7 @@ def train(pathDataset,
 
 
 pathDB = '/private/home/mriviere/LibriSpeech/train-clean-100/'
+#audioData = AudioBatchData(pathDB)
 #testDB = AudioBatchDataset(pathDB)
 train(pathDB)
 
