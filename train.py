@@ -3,113 +3,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from torch.utils.data import Dataset
+from metric import trainSpeakerSeprarability
+from dataset import AudioBatchData, AudioBatchDataset
 
 import numpy as np
 
-import torchaudio
 import math
 import random
 
 import sys
 
-###########################################
-# Dataset
-###########################################
-
-class AudioBatchData:
-
-    # Work on this and on the sampler
-    def __init__(self,
-                 path):
-
-        self.dbPath = path
-        self.loadAll()
-
-    def loadAll(self):
-
-        # Speakers
-        self.speakers = [f for f in os.listdir(self.dbPath) \
-                         if os.path.isdir(os.path.join(self.dbPath, f))]
-
-        self.speakers =self.speakers[:10]
-
-        # Labels
-        self.speakerLabel = [0]
-        self.seqLabel = [0]
-
-        # Data
-        self.data = []
-
-        itemIndex = 0
-        seqIndex = 0
-        speakerIndex=0
-
-        for indexSpeaker, speaker in enumerate(self.speakers):
-            refPath = os.path.join(self.dbPath, speaker)
-            chapters = [ f for f in os.listdir(refPath) \
-                        if os.path.isdir(os.path.join(refPath, f))]
-
-            for chapter in chapters:
-                chapterPath = os.path.join(refPath, chapter)
-                #Debugging only
-
-                for seqName in os.listdir(chapterPath):
-                    if os.path.splitext(seqName)[1] != '.flac':
-                        continue
-
-                    seqPath = os.path.join(chapterPath, seqName)
-                    seq = torchaudio.load(seqPath)[0].view(-1)
-
-                    sizeSeq = seq.size(0)
-                    seqIndex+= sizeSeq
-                    speakerIndex+= sizeSeq
-
-                    self.data.append(seq)
-                    self.seqLabel.append(seqIndex)
-                    itemIndex+=1
-
-            self.speakerLabel.append(speakerIndex)
-
-        self.data = torch.cat(self.data, dim = 0)
-
-    def getLabel(self, idx):
-
-       idSpeaker = next(x[0] for x in enumerate(self.speakerLabel) if x[1] >= idx) -1
-       return idSpeaker
-
-    def __len__(self):
-        return len(self.data)
-
-    def getNSpeakers(self):
-        return len(self.speakers)
-
-class AudioBatchDataset(Dataset):
-
-    def __init__(self,
-                 batchData,
-                 offset =0,
-                 sizeWindow=2048,
-                 maxOffset = -1):
-
-        self.batchData = batchData
-        self.offset = offset
-        self.sizeWindow = sizeWindow
-        self.maxOffset = maxOffset
-
-        if self.maxOffset <= 0:
-            self.maxOffset = len(self.batchData)
-
-    def __len__(self):
-
-        return int(math.floor((self.maxOffset - self.offset) / self.sizeWindow))
-
-    def __getitem__(self, idx):
-
-        windowOffset = self.offset + idx * self.sizeWindow
-        speakerLabel = torch.tensor(self.batchData.getLabel(windowOffset), dtype=torch.long)
-
-        return self.batchData.data[windowOffset:(self.sizeWindow + windowOffset)].view(1, -1), speakerLabel
 
 ###########################################
 # Networks
@@ -121,15 +24,15 @@ class EncoderNetwork(nn.Module):
                  sizeHidden = 512):
 
         super(EncoderNetwork, self).__init__()
-        self.conv0 = nn.Conv1d(1, sizeHidden, 10, stride=5)
+        self.conv0 = nn.Conv1d(1, sizeHidden, 10, stride=5, padding=3)
         self.batchNorm0 = nn.BatchNorm1d(sizeHidden)
-        self.conv1 = nn.Conv1d(sizeHidden, sizeHidden, 8, stride=4)
+        self.conv1 = nn.Conv1d(sizeHidden, sizeHidden, 8, stride=4, padding=2)
         self.batchNorm1 = nn.BatchNorm1d(sizeHidden)
-        self.conv2 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2)
+        self.conv2 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2, padding=1)
         self.batchNorm2 = nn.BatchNorm1d(sizeHidden)
-        self.conv3 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2)
+        self.conv3 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2, padding=1)
         self.batchNorm3 = nn.BatchNorm1d(sizeHidden)
-        self.conv4 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2)
+        self.conv4 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2, padding=1)
         self.batchNorm4 = nn.BatchNorm1d(sizeHidden)
 
     def getDimOutput(self):
@@ -252,100 +155,6 @@ def getFullSamples(negativeSample,
 # Metric
 ###########################################
 
-#TODO: correct. With the BatchNorm involved we need to use the train() / eval()
-# modes
-def trainSpeakerSeprarability(audioData,
-                              gEncoder,
-                              gAR,
-                              nEpoch,
-                              sizeAudioSample,
-                              nSamples,
-                              trainEncoder = False):
-
-    nSpeakers = dataset.getNSpeakers()
-    print("%d images, %d speakers" % (len(audioData), nSpeakers))
-
-    # Get
-    linearSpeakerClassifier = nn.Linear(gEncoder.getDimOutput() * 8, nSpeakers)
-
-    criterion = nn.CrossEntropyLoss()
-
-    batchSize = 16
-    n_devices = 1
-    device = torch.device("cuda:0")
-
-    lr = 2e-4
-
-    gEncoder = nn.DataParallel(gEncoder)
-    gEncoder.to(device)
-    gAR = nn.DataParallel(gAR)
-    gAR.to(device)
-    linearSpeakerClassifier=nn.DataParallel(linearSpeakerClassifier)
-    linearSpeakerClassifier.to(device)
-
-    optimizerClassifier = torch.optim.Adam(list(linearSpeakerClassifier.parameters()), lr=lr)
-    g_params = list(gEncoder.parameters()) \
-             + list(gAR.parameters())
-
-    optimizerG = torch.optim.Adam(g_params, lr=lr)
-
-    schedulerC = torch.optim.lr_scheduler.StepLR(optimizerClassifier, step_size=3, gamma=0.1)
-    schedulerG = torch.optim.lr_scheduler.StepLR(optimizerG, step_size=3, gamma=0.1)
-
-    for epoch in range(nEpoch):
-
-        print("Epoch %d" % epoch)
-
-        for isTrain in [True, False]:
-
-            locLoss = 0
-            locAcc = 0
-            dataLoader = torch.utils.data.DataLoader(datasetMatchTrain[isTrain],
-                                                     batch_size=batchSize,
-                                                     shuffle=True,
-                                                     num_workers=n_devices)
-            nStep = 0
-
-            for fullData in dataLoader:
-
-                optimizerClassifier.zero_grad()
-                optimizerG.zero_grad()
-
-                batch, labels = fullData
-                batch = batch.to(device)
-                labels = labels.to(device)
-
-                encodedData = gEncoder(batch)
-                encodedData = encodedData.contiguous().view(encodedData.size(0), -1)
-
-                predictedLabels = linearSpeakerClassifier(encodedData)
-                labels = labels.view(-1)
-                _, predictions = predictedLabels.max(1)
-
-                loss = criterion(predictedLabels, labels)
-                loss.backward()
-
-                locLoss+=loss.item()
-                locAcc+= float((predictions == labels).sum().item()) / (labels.size(0))
-
-                optimizerClassifier.step()
-
-                if trainEncoder:
-                    optimizerG.step()
-                nStep+=1
-
-            locLoss /= nStep
-            locAcc /= nStep
-            if isTrain:
-                print("Loss train %f " % locLoss)
-                print("Acc train %f" %locAcc)
-            else:
-                print("Loss val %f " % locLoss)
-                print("Acc val %f" %locAcc)
-
-            print("")
-            schedulerG.step()
-            schedulerG.step()
 
 ###########################################
 # Main
@@ -399,9 +208,9 @@ def trainStep(dataset,
                                              shuffle=True,
                                              num_workers=n_devices)
 
-    locLoss =  np.zeros(nPredicts + 1)
-    locAcc = np.zeros(nPredicts + 1)
-    locMinMax = np.zeros(nPredicts + 1)
+    logs = {"locLoss": np.zeros(nPredicts + 1),
+            "locAcc": np.zeros(nPredicts + 1),
+            "locMinMax": np.zeros(nPredicts + 1)}
 
     nUpdate = 0
     for step, fulldata in enumerate(dataLoader):
@@ -441,25 +250,25 @@ def trainStep(dataset,
             for gtSeq in range(n_devices):
                 lossK= lossCriterion(locPreds[:, :, gtSeq], labelLoss)
                 totLoss+=lossK
-                locLoss[k + 1] += lossK.item()
+                logs["locLoss"][k + 1] += lossK.item()
 
                 _, predLabel = locPreds[:, :, gtSeq].max(1)
                 _, worstLabel = locPreds[:, :, gtSeq].min(1)
                 accK = float(torch.sum(predLabel == 0).item()) / (n_devices * windowSize)
 
-                locAcc[k + 1] += accK
-                locMinMax[k + 1] += float(torch.sum(predLabel == worstLabel).item()) / (n_devices * windowSize)
+                logs["locAcc"][k + 1] += accK
+                logs["locMinMax"][k + 1] += float(torch.sum(predLabel == worstLabel).item()) / (n_devices * windowSize)
 
         totLoss.backward()
         optimizer.step()
         nUpdate+=1
 
         if nUpdate % logStep == logStep -1:
-            updateLogs("Update %d, training loss:" % (nUpdate + 1), locLoss, locAcc, locMinMax, logStep)
+            updateLogs("Update %d, training loss:" % (nUpdate + 1), logs["locLoss"], logs["locAcc"], logs["locMinMax"], logStep)
 
     lastStep = int(math.floor(nUpdate) / logStep) * logStep
     if lastStep < nUpdate:
-        updateLogs("Update %d, training loss:" % (nUpdate + 1), locLoss, locAcc, locMinMax, nUpdate - lastStep)
+        updateLogs("Update %d, training loss:" % (nUpdate + 1), logs["locLoss"], logs["locAcc"], logs["locMinMax"], nUpdate - lastStep)
 
 def valStep(dataset,
             batchSize,
@@ -604,8 +413,22 @@ def train(pathDataset,
         valStep(valDataset, batchSize, n_devices, nPredicts, negativeSamplingExt,
                 gEncoder, gGar, wPrediction, lossCriterion)
 
+        trainSpeakerSeprarability(audioData, gEncoder.module, 2, 8,
+                                  trainEncoder = False)
+
 
 #The loss profile is indeed strange
 # Perform some trivial supervised task to check that everything works
 pathDB = '/private/home/mriviere/LibriSpeech/train-clean-100/'
 train(pathDB)
+
+hiddenEncoder = 512
+#gEncoder = EncoderNetwork(sizeHidden = hiddenEncoder)
+#audioData = AudioBatchData(pathDB)
+nEpoch = 10
+nSamples = 8
+#trainSpeakerSeprarability(audioData,
+#                          gEncoder,
+#                          nEpoch,
+#                          nSamples,
+#                          trainEncoder = True)
