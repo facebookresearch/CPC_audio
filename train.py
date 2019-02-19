@@ -32,7 +32,7 @@ class AudioBatchData:
         self.speakers = [f for f in os.listdir(self.dbPath) \
                          if os.path.isdir(os.path.join(self.dbPath, f))]
 
-        self.speakers =self.speakers[:5]
+        self.speakers =self.speakers[:10]
 
         # Labels
         self.speakerLabel = [0]
@@ -122,10 +122,15 @@ class EncoderNetwork(nn.Module):
 
         super(EncoderNetwork, self).__init__()
         self.conv0 = nn.Conv1d(1, sizeHidden, 10, stride=5)
+        self.batchNorm0 = nn.BatchNorm1d(sizeHidden)
         self.conv1 = nn.Conv1d(sizeHidden, sizeHidden, 8, stride=4)
+        self.batchNorm1 = nn.BatchNorm1d(sizeHidden)
         self.conv2 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2)
+        self.batchNorm2 = nn.BatchNorm1d(sizeHidden)
         self.conv3 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2)
+        self.batchNorm3 = nn.BatchNorm1d(sizeHidden)
         self.conv4 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2)
+        self.batchNorm4 = nn.BatchNorm1d(sizeHidden)
 
     def getDimOutput(self):
 
@@ -133,11 +138,11 @@ class EncoderNetwork(nn.Module):
 
     def forward(self, x):
 
-        x = F.relu(self.conv0(x))
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        x = F.relu(self.conv4(x))
+        x = F.relu(self.batchNorm0(self.conv0(x)))
+        x = F.relu(self.batchNorm1(self.conv1(x)))
+        x = F.relu(self.batchNorm2(self.conv2(x)))
+        x = F.relu(self.batchNorm3(self.conv3(x)))
+        x = F.relu(self.batchNorm4(self.conv4(x)))
 
         return x
 
@@ -170,7 +175,7 @@ class PredictionNetwork(nn.Module):
 
         for i in range(nPredicts):
 
-            self.predictors.append(nn.Linear(dimOutputAR, dimOutputEncoder))
+            self.predictors.append(nn.Linear(dimOutputAR, dimOutputEncoder, bias = False))
 
     def forward(self, c, candidates):
 
@@ -247,6 +252,8 @@ def getFullSamples(negativeSample,
 # Metric
 ###########################################
 
+#TODO: correct. With the BatchNorm involved we need to use the train() / eval()
+# modes
 def trainSpeakerSeprarability(audioData,
                               gEncoder,
                               gAR,
@@ -264,10 +271,10 @@ def trainSpeakerSeprarability(audioData,
     criterion = nn.CrossEntropyLoss()
 
     batchSize = 16
-    n_devices = 2
+    n_devices = 1
     device = torch.device("cuda:0")
 
-    lr = 1e-4
+    lr = 2e-4
 
     gEncoder = nn.DataParallel(gEncoder)
     gEncoder.to(device)
@@ -371,15 +378,166 @@ def updateLogs(text, locLoss, locAcc, locMinMax, logStep):
     locAcc[:] = 0
     locMinMax[:] = 0
 
+def trainStep(dataset,
+              batchSize,
+              n_devices,
+              nPredicts,
+              negativeSamplingExt,
+              gEncoder,
+              gGar,
+              wPrediction,
+              optimizer,
+              lossCriterion,
+              logStep):
+
+    gEncoder.train()
+    gGar.train()
+    wPrediction.train()
+
+    dataLoader = torch.utils.data.DataLoader(dataset,
+                                             batch_size=batchSize,
+                                             shuffle=True,
+                                             num_workers=n_devices)
+
+    locLoss =  np.zeros(nPredicts + 1)
+    locAcc = np.zeros(nPredicts + 1)
+    locMinMax = np.zeros(nPredicts + 1)
+
+    nUpdate = 0
+    for step, fulldata in enumerate(dataLoader):
+
+        optimizer.zero_grad()
+
+        batchData, _ = fulldata
+
+        if batchData.size(0) < batchSize:
+            continue
+
+        batchData = batchData.to(gEncoder.output_device)
+        encodedData = gEncoder(batchData).permute(2, 0, 1)
+
+        #Data have now the following structure (seq, batchSize, nChannels)
+        hiddenEncoder = encodedData.size(2)
+
+        #We are going to perform one prediction sequence per GPU
+        gtPredictions = encodedData[:,:n_devices, :].view(-1, n_devices, hiddenEncoder)
+        inputGar = encodedData[:-nPredicts, :n_devices, :].view(-1, n_devices, hiddenEncoder)
+
+        cFeature = gGar(inputGar)
+
+        windowSize = inputGar.size(0)
+
+        negExt, labelLoss = getNegativeSamples(encodedData,
+                                               windowSize,
+                                               negativeSamplingExt,
+                                               n_devices)
+        fullSeq = getFullSamples(negExt,
+                                 gtPredictions,
+                                 nPredicts)
+        totLoss = 0
+        predictions = wPrediction(cFeature, fullSeq)
+
+        for k, locPreds in enumerate(predictions):
+            for gtSeq in range(n_devices):
+                lossK= lossCriterion(locPreds[:, :, gtSeq], labelLoss)
+                totLoss+=lossK
+                locLoss[k + 1] += lossK.item()
+
+                _, predLabel = locPreds[:, :, gtSeq].max(1)
+                _, worstLabel = locPreds[:, :, gtSeq].min(1)
+                accK = float(torch.sum(predLabel == 0).item()) / (n_devices * windowSize)
+
+                locAcc[k + 1] += accK
+                locMinMax[k + 1] += float(torch.sum(predLabel == worstLabel).item()) / (n_devices * windowSize)
+
+        totLoss.backward()
+        optimizer.step()
+        nUpdate+=1
+
+        if nUpdate % logStep == logStep -1:
+            updateLogs("Update %d, training loss:" % (nUpdate + 1), locLoss, locAcc, locMinMax, logStep)
+
+    lastStep = int(math.floor(nUpdate) / logStep) * logStep
+    if lastStep < nUpdate:
+        updateLogs("Update %d, training loss:" % (nUpdate + 1), locLoss, locAcc, locMinMax, nUpdate - lastStep)
+
+def valStep(dataset,
+            batchSize,
+            n_devices,
+            nPredicts,
+            negativeSamplingExt,
+            gEncoder,
+            gGar,
+            wPrediction,
+            lossCriterion):
+
+    gEncoder.eval()
+    gGar.eval()
+    wPrediction.eval()
+
+    dataLoader = torch.utils.data.DataLoader(dataset,
+                                             batch_size=batchSize,
+                                             shuffle=True,
+                                             num_workers=n_devices)
+
+    locLoss =  np.zeros(nPredicts + 1)
+    locAcc = np.zeros(nPredicts + 1)
+    locMinMax = np.zeros(nPredicts + 1)
+
+    for step, fulldata in enumerate(dataLoader):
+
+        batchData, _ = fulldata
+
+        if batchData.size(0) < batchSize:
+            continue
+
+        batchData = batchData.to(gEncoder.output_device)
+        encodedData = gEncoder(batchData).permute(2, 0, 1)
+
+        #Data have now the following structure (seq, batchSize, nChannels)
+        hiddenEncoder = encodedData.size(2)
+
+        #We are going to perform one prediction sequence per GPU
+        gtPredictions = encodedData[:,:n_devices, :].view(-1, n_devices, hiddenEncoder)
+        inputGar = encodedData[:-nPredicts, :n_devices, :].view(-1, n_devices, hiddenEncoder)
+
+        cFeature = gGar(inputGar)
+
+        windowSize = inputGar.size(0)
+
+        negExt, labelLoss = getNegativeSamples(encodedData,
+                                               windowSize,
+                                               negativeSamplingExt,
+                                               n_devices)
+        fullSeq = getFullSamples(negExt,
+                                 gtPredictions,
+                                 nPredicts)
+        totLoss = 0
+        predictions = wPrediction(cFeature, fullSeq)
+
+        for k, locPreds in enumerate(predictions):
+            for gtSeq in range(n_devices):
+                lossK= lossCriterion(locPreds[:, :, gtSeq], labelLoss)
+                totLoss+=lossK
+                locLoss[k + 1] += lossK.item()
+
+                _, predLabel = locPreds[:, :, gtSeq].max(1)
+                _, worstLabel = locPreds[:, :, gtSeq].min(1)
+                accK = float(torch.sum(predLabel == 0).item()) / (n_devices * windowSize)
+
+                locAcc[k + 1] += accK
+                locMinMax[k + 1] += float(torch.sum(predLabel == worstLabel).item()) / (n_devices * windowSize)
+
+    updateLogs("Validation loss:", locLoss, locAcc, locMinMax, step)
+
 def train(pathDataset,
           hiddenEncoder = 512,
           hiddenGar = 256,
           nPredicts = 4,
-          nInputs = 116,
+          nInputs = 124,
           sizeSample = 160,
           nUpdates = 300000,
-          negativeSamplingExt = 128,
-          negativeSamplingIn = 1):
+          negativeSamplingExt = 128):
 
     # Build the dataset
     audioData = AudioBatchData(pathDataset)
@@ -391,11 +549,10 @@ def train(pathDataset,
 
     # Loss criterion
     lossCriterion = nn.CrossEntropyLoss()
-    nTotSamples = negativeSamplingExt + negativeSamplingIn + 1
 
     # GPU
     device = torch.device("cuda:0")
-    n_devices = 2#torch.cuda.device_count()
+    n_devices = 1#torch.cuda.device_count()
     batchSize = 8 * n_devices
 
     gEncoder = nn.DataParallel(gEncoder)
@@ -424,12 +581,7 @@ def train(pathDataset,
     lossLog = []
     accLog = []
 
-    logStep = min(1000, int(math.ceil(nWindows / batchSize)))
-    locLoss = {True : np.zeros(nPredicts + 1), False: np.zeros(nPredicts + 1)}
-    locAcc = {True : np.zeros(nPredicts + 1), False: np.zeros(nPredicts + 1)}
-    locMinMax = {True : np.zeros(nPredicts + 1), False: np.zeros(nPredicts + 1)}
-
-    nUpdate = 0
+    logStep = 1000
 
     for epoch in range(nEpoch):
 
@@ -446,83 +598,14 @@ def train(pathDataset,
                                                                  [sizeTrain,
                                                                     sizeVal])
 
-        isTrainDataset = {True: trainDataset, False: valDataset}
+        trainStep(trainDataset, batchSize, n_devices, nPredicts, negativeSamplingExt,
+                  gEncoder, gGar, wPrediction, optimizer,lossCriterion, logStep)
 
-        for isTrain in [True, False]:
+        valStep(valDataset, batchSize, n_devices, nPredicts, negativeSamplingExt,
+                gEncoder, gGar, wPrediction, lossCriterion)
 
-            # TODO: faire passer au modele son statut train / val (source de bugs ex dropout)
-
-            dataLoader = torch.utils.data.DataLoader(isTrainDataset[isTrain],
-                                                     batch_size=batchSize,
-                                                     shuffle=True,
-                                                     num_workers=n_devices)
-
-            # Load everything + random offset at each epoch or each batch
-            # keep hidden between consecutive batches ?
-
-            for step, fulldata in enumerate(dataLoader):
-
-                optimizer.zero_grad()
-
-                batchData, _ = fulldata
-
-                if batchData.size(0) < batchSize:
-                    continue
-
-                batchData = batchData.to(device)
-                encodedData = gEncoder(batchData).permute(2, 0, 1)
-
-                #Data have now the following structure (seq, batchSize, nChannels)
-                #We are going to perform one prediction sequence per GPU
-                gtPredictions = encodedData[:,:n_devices, :].view(-1, n_devices, hiddenEncoder)
-                inputGar = encodedData[:-nPredicts, :n_devices, :].view(-1, n_devices, hiddenEncoder)
-
-                cFeature = gGar(inputGar)
-
-                windowSize = inputGar.size(0)
-
-                negExt, labelLoss = getNegativeSamples(encodedData,
-                                                       windowSize,
-                                                       negativeSamplingExt,
-                                                       n_devices)
-                fullSeq = getFullSamples(negExt,
-                                         gtPredictions,
-                                         nPredicts)
-                totLoss = 0
-                predictions = wPrediction(cFeature, fullSeq)
-
-                for k, locPreds in enumerate(predictions):
-                    for gtSeq in range(n_devices):
-                        lossK= lossCriterion(locPreds[:, :, gtSeq], labelLoss)
-                        totLoss+=lossK
-                        locLoss[isTrain][k] += lossK.item()
-
-                        _, predLabel = locPreds[:, :, gtSeq].max(1)
-                        _, worstLabel = locPreds[:, :, gtSeq].min(1)
-                        accK = float(torch.sum(predLabel == 0).item()) / (n_devices * windowSize)
-
-                        locAcc[isTrain][k] += accK
-                        locMinMax[isTrain][k] += float(torch.sum(predLabel == worstLabel).item()) / (n_devices * windowSize)
-
-                if isTrain:
-                    totLoss.backward()
-                    optimizer.step()
-                    nUpdate+=1
-
-                    if nUpdate % logStep == logStep -1:
-                        updateLogs("Update %d, training loss:" % (nUpdate + 1), locLoss[isTrain], locAcc[isTrain], locMinMax[isTrain], logStep)
-
-            if not isTrain:
-                updateLogs("Validation loss:", locLoss[isTrain], locAcc[isTrain], locMinMax[isTrain], step)
 
 #The loss profile is indeed strange
 # Perform some trivial supervised task to check that everything works
-
-
 pathDB = '/private/home/mriviere/LibriSpeech/train-clean-100/'
-#audioData = AudioBatchData(pathDB)
-#testDB = AudioBatchDataset(pathDB)
 train(pathDB)
-
-#audioDataset = AudioBatchData(pathDB)
-#print(audioDataset.getLabel(48355924))
