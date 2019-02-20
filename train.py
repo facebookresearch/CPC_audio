@@ -6,8 +6,6 @@ import torch.nn.functional as F
 from metric import trainSpeakerSeprarability
 from dataset import AudioBatchData, AudioBatchDataset
 
-from torch.utils.data import Subset
-
 import numpy as np
 
 import math
@@ -418,25 +416,37 @@ def train(pathDataset,
     logStep = 1000
 
     # Train / val split
-    sizeDataset = len(AudioBatchDataset(audioData, offset=sizeWindow, sizeWindow=sizeWindow))
-    indices = torch.randperm(sizeDataset)
+    #sizeDataset = len(AudioBatchDataset(audioData, offset=sizeWindow, sizeWindow=sizeWindow))
+    #indices = torch.randperm(sizeDataset)
 
     # There are still some overlapps with this configuration
     # TODO: find better
-    shareTrain = int(0.8*sizeDataset)
-    indicesTrain = indices[:shareTrain]
-    indicesVal = indices[shareTrain:]
+    # Would it be legitimate to split by speaker ? Speaker train / speaker val ?
+    #shareTrain = int(0.8*sizeDataset)
+    #indicesTrain = indices[:shareTrain]
+    #indicesVal = indices[shareTrain:]
+
+    # Train / val split : by speakers
+    nSpeakers = audioData.getNSpeakers()
+    speakerTrain = int(0.8 * nSpeakers)
+    baseOffsetTrain = audioData.getSpeakerOffset(speakerTrain)
 
     for epoch in range(nEpoch):
 
         print("Starting epoch %d" % epoch)
         offset = random.randint(0, sizeWindow / 2)
 
-        dataset = AudioBatchDataset(audioData,
-                                    offset = offset,
-                                    sizeWindow = sizeWindow)
-        trainDataset = Subset(dataset, indicesTrain)
-        valDataset = Subset(dataset, indicesVal)
+        trainDataset = AudioBatchDataset(audioData,
+                                         offset=offset,
+                                         sizeWindow=sizeWindow,
+                                         maxOffset=baseOffsetTrain + offset)
+
+        valDataset = AudioBatchDataset(audioData,
+                                         offset=baseOffsetTrain + offset,
+                                         sizeWindow=sizeWindow)
+
+        print("Training dataset %d samples, Validation dataset %d samples" % \
+            (len(trainDataset), len(valDataset)))
 
         locLogs = trainStep(trainDataset, batchSize, n_devices,
                             nPredicts, negativeSamplingExt,
@@ -446,22 +456,22 @@ def train(pathDataset,
         valStep(valDataset, batchSize, n_devices, nPredicts, negativeSamplingExt,
                 gEncoder, gGar, wPrediction, lossCriterion)
 
-        trainSpeakerSeprarability(audioData, gEncoder.module, 2, 8,
-                                  trainEncoder = False)
+        #trainSpeakerSeprarability(audioData, gEncoder.module, 5, 8,
+        #                          trainEncoder = False)
 
 
 #The loss profile is indeed strange
 # Perform some trivial supervised task to check that everything works
 pathDB = '/private/home/mriviere/LibriSpeech/train-clean-100/'
-train(pathDB)
+#train(pathDB)
 
 hiddenEncoder = 512
-#gEncoder = EncoderNetwork(sizeHidden = hiddenEncoder)
-#audioData = AudioBatchData(pathDB)
+gEncoder = EncoderNetwork(sizeHidden = hiddenEncoder)
+audioData = AudioBatchData(pathDB)
 nEpoch = 10
 nSamples = 8
-#trainSpeakerSeprarability(audioData,
-#                          gEncoder,
-#                          nEpoch,
-#                          nSamples,
-#                          trainEncoder = True)
+trainSpeakerSeprarability(audioData,
+                          gEncoder,
+                          nEpoch,
+                          nSamples,
+                          trainEncoder = False)

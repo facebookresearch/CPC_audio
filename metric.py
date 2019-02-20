@@ -1,5 +1,7 @@
 import torch
 import torch.nn as nn
+from torch.utils.data import Subset
+
 import random
 import math
 
@@ -45,21 +47,21 @@ def trainSpeakerSeprarability(audioData,
         optimizerG = torch.optim.Adam(g_params, lr=lr)
         schedulerG = torch.optim.lr_scheduler.StepLR(optimizerG, step_size=3, gamma=0.1)
 
+    offset = random.randint(0, sizeWindow)
+    dataset = AudioBatchDataset(audioData,
+                                offset = offset,
+                                sizeWindow = sizeWindow)
+
+    sizeDataset = len(dataset)
+    sizeTrain = int(0.8 * sizeDataset)
+    indices = torch.randperm(sizeDataset)
+
+    trainDataset = Subset(dataset, indices[:sizeTrain])
+    valDataset = Subset(dataset, indices[sizeTrain:])
+
     for epoch in range(nEpoch):
 
         print("Epoch %d" % epoch)
-        offset = random.randint(0, sizeWindow)
-
-        dataset = AudioBatchDataset(audioData,
-                                    offset = offset,
-                                    sizeWindow = sizeWindow)
-
-        sizeTrain = int(0.8 * len(dataset))
-        sizeVal = len(dataset) - sizeTrain
-        trainDataset, valDataset = torch.utils.data.random_split(dataset,
-                                                                 [sizeTrain,
-                                                                    sizeVal])
-
         dataLoaderTrain = torch.utils.data.DataLoader(trainDataset,
                                                       batch_size=batchSize,
                                                       shuffle=True,

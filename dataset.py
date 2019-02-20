@@ -72,6 +72,9 @@ class AudioBatchData:
     def getNSpeakers(self):
         return len(self.speakers)
 
+    def getSpeakerOffset(self, x):
+        return self.speakerLabel[x]
+
 class AudioBatchDataset(Dataset):
 
     def __init__(self,
