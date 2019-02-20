@@ -1,0 +1,140 @@
+import torch
+import torch.nn as nn
+
+import numpy as np
+
+###############
+# Criterion
+###############
+
+class PredictionNetwork(nn.Module):
+
+    def __init__(self,
+                 nPredicts,
+                 dimOutputAR,
+                 dimOutputEncoder):
+
+        super(PredictionNetwork, self).__init__()
+        self.predictors = nn.ModuleList()
+
+        for i in range(nPredicts):
+
+            self.predictors.append(nn.Linear(dimOutputAR, dimOutputEncoder, bias = False))
+
+    def forward(self, c, candidates):
+
+        assert(len(candidates) == len(self.predictors))
+
+        out = []
+        for k in range(len(self.predictors)):
+
+            # torch.nn.Bilinear ? Replace
+            locC = self.predictors[k](c)
+            locC = locC.view(locC.size(0), 1, locC.size(1), locC.size(2))
+            outK = (locC*candidates[k]).mean(dim=3)
+
+            out.append(outK)
+        return out
+
+class CPCUnsupersivedCriterion:
+
+    def __init__(self,
+                 nPredicts,
+                 dimOutputAR,
+                 dimOutputEncoder,
+                 negativeSamplingExt,
+                 nGtSequence,
+                 toGPU = True):
+
+        super(CPCUnsupersivedCriterion, self).__init__()
+        self.wPrediction = PredictionNetwork(nPredicts, dimOutputAR, dimOutputEncoder)
+        self.nPredicts = nPredicts
+        self.negativeSamplingExt = negativeSamplingExt
+        self.nGtSequence = nGtSequence
+
+        self.lossCriterion = nn.CrossEntropyLoss()
+
+        if toGPU:
+            self.wPrediction = nn.DataParallel(self.wPrediction)
+            self.wPrediction.to(torch.device("cuda:0"))
+
+    def eval(self):
+        self.wPrediction.eval()
+
+    def train(self):
+        self.wPrediction.train()
+
+    def state_dict(self):
+        return self.wPrediction.state_dict()
+
+    def parameters(self):
+        return self.wPrediction.parameters()
+
+    def sample(self, gtPredictions, encodedData, windowSize):
+
+        # Correct the number of negative samples to make sure that the number of
+        # indices to draw is lower than the available number of indices
+        dimEncoded = encodedData.size(1)
+        nNegativeExt = encodedData.size(0)
+
+        if nNegativeExt == 0:
+            print(gtPredictions.size())
+
+        negativeSamplingExt = min(self.negativeSamplingExt, nNegativeExt)
+
+        # The ground truth data will always be the first item
+        labelLoss = torch.zeros((windowSize),
+                                dtype = torch.long,
+                                device = encodedData.device)
+
+        extIdx = np.random.randint(0, nNegativeExt,
+                                   size=(negativeSamplingExt * windowSize * self.nGtSequence))
+
+        negExt = encodedData[extIdx].view(windowSize,
+                                          negativeSamplingExt,
+                                          self.nGtSequence,
+                                          dimEncoded)
+
+        outputs = []
+        for k in range(1, self.nPredicts + 1):
+
+            # Positive samples
+            if k < self.nPredicts:
+                posSeq = gtPredictions[k:-(self.nPredicts-k)]
+            else:
+                posSeq = gtPredictions[k:]
+
+            posSeq = posSeq.view(posSeq.size(0), 1, posSeq.size(1), posSeq.size(2))
+
+            # Full sequence
+            fullSeq = torch.cat((posSeq, negExt), dim =1)
+            outputs.append(fullSeq)
+
+        return outputs, labelLoss
+
+    def getPredictions(self, cFeature, gtPredictions, otherEncoded, *args):
+
+        windowSize = gtPredictions.size(0) - self.nPredicts
+        cFeature = cFeature[:windowSize]
+        sampledData, labelLoss = self.sample(gtPredictions, otherEncoded, windowSize)
+
+        predictions = self.wPrediction(cFeature, sampledData)
+
+        outLosses = []
+        outAcc = []
+        for k, locPreds in enumerate(predictions):
+            for gtSeq in range(self.nGtSequence):
+                lossK= self.lossCriterion(locPreds[:, :, gtSeq], labelLoss)
+                outLosses.append(lossK.view(-1))
+                _, predsIndex = locPreds[:, :, gtSeq].max(1)
+                outAcc.append(torch.sum(predsIndex == 0).double().view(-1) / (self.nGtSequence * windowSize))
+
+        return torch.cat(outLosses, dim=0), torch.cat(outAcc, dim=0)
+
+class SpeakerCriterion:
+
+    def __init_(self, nSpeaker, nSample):
+
+        self.linearSpeakerClassifier = nn.Linear(gEncoder.getDimOutput() * nSamples, nSpeakers)
+        self.Losscriterion = nn.CrossEntropyLoss()
+        self.nGtSequence = -1
