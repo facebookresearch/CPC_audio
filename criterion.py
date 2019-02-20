@@ -133,8 +133,47 @@ class CPCUnsupersivedCriterion:
 
 class SpeakerCriterion:
 
-    def __init_(self, nSpeaker, nSample):
+    def __init__(self, dimEncoder, nSpeakers, nSample, toGPU=True):
 
-        self.linearSpeakerClassifier = nn.Linear(gEncoder.getDimOutput() * nSamples, nSpeakers)
-        self.Losscriterion = nn.CrossEntropyLoss()
+        self.linearSpeakerClassifier = nn.Linear(dimEncoder * nSample, nSpeakers)
+        self.lossCriterion = nn.CrossEntropyLoss()
         self.nGtSequence = -1
+        self.nSample = nSample
+
+        if toGPU:
+            self.linearSpeakerClassifier = nn.DataParallel(self.linearSpeakerClassifier)
+            self.linearSpeakerClassifier.cuda()
+
+    def train(self):
+        self.linearSpeakerClassifier.train()
+
+    def eval(self):
+        self.linearSpeakerClassifier.eval()
+
+    def state_dict(self):
+        return self.linearSpeakerClassifier.state_dict()
+
+    def parameters(self):
+        return self.linearSpeakerClassifier.parameters()
+
+    def getPredictions(self, cFeature, gtPredictions, otherEncoded, label):
+
+        nWindow = cFeature.size(0)
+        nSplits = int(nWindow / self.nSample)
+
+        nSampledLabels = self.nSample * nSplits
+
+        label = label.view(-1, 1).expand(-1, nSplits).contiguous().view(-1)
+
+        # cFeature.size() : seq Size x batchSize x hidden size
+        batchSize = cFeature.size(1)
+        cFeature = cFeature[:nSampledLabels].permute(1,0,2)
+
+        cFeature = cFeature.contiguous().view(nSplits * batchSize, -1)
+
+        predictions = self.linearSpeakerClassifier(cFeature)
+        loss = self.lossCriterion(predictions, label).view(-1)
+
+        acc = (predictions.max(1)[1] == label).double().mean().view(-1)
+
+        return loss, acc

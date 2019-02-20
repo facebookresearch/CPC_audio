@@ -63,7 +63,7 @@ class AudioBatchData:
 
     def getLabel(self, idx):
 
-       idSpeaker = next(x[0] for x in enumerate(self.speakerLabel) if x[1] >= idx) -1
+       idSpeaker = next(x[0] for x in enumerate(self.speakerLabel) if x[1] > idx) -1
        return idSpeaker
 
     def __len__(self):
@@ -79,8 +79,8 @@ class AudioBatchDataset(Dataset):
 
     def __init__(self,
                  batchData,
+                 sizeWindow,
                  offset =0,
-                 sizeWindow=2048,
                  maxOffset = -1):
 
         self.batchData = batchData
@@ -90,6 +90,8 @@ class AudioBatchDataset(Dataset):
 
         if self.maxOffset <= 0:
             self.maxOffset = len(self.batchData)
+
+        print(self.maxOffset)
 
     def __len__(self):
 
@@ -101,3 +103,10 @@ class AudioBatchDataset(Dataset):
         speakerLabel = torch.tensor(self.batchData.getLabel(windowOffset), dtype=torch.long)
 
         return self.batchData.data[windowOffset:(self.sizeWindow + windowOffset)].view(1, -1), speakerLabel
+
+# On doit pouvoir sampler
+# par fichier audio, par speaker, et uniform
+# faire les UTs
+
+# Pipeline
+# pre-training puis downstream task
