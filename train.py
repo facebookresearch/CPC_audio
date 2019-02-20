@@ -6,12 +6,17 @@ import torch.nn.functional as F
 from metric import trainSpeakerSeprarability
 from dataset import AudioBatchData, AudioBatchDataset
 
+from torch.utils.data import Subset
+
 import numpy as np
 
 import math
 import random
 
 import sys
+
+import visdom
+vis = visdom.Visdom()
 
 
 ###########################################
@@ -160,32 +165,49 @@ def getFullSamples(negativeSample,
 # Main
 ###########################################
 
-def updateLogs(text, locLoss, locAcc, locMinMax, logStep):
+def updateAndShowLogs(text, logs, nPredicts):
 
-    locLoss /= logStep
-    locAcc /= logStep
-    locMinMax /= logStep
-
-    nPredicts = len(locLoss)
-
-    strSteps = ['Step'] + [str(s) for s in range(1, nPredicts)]
-    strLoss = ['Loss'] + ["{:10.6f}".format(s) for s in locLoss[1:]]
-    strAcc = ['Accuracy'] + ["{:10.6f}".format(s) for s in locAcc[1:]]
-    strMinMax = ['Flat share'] + ["{:10.6f}".format(s) for s in locMinMax[1:]]
-    formatCommand = ' '.join(['{:>16}' for x in range(nPredicts)])
+    logStep = logs["step"]
 
     print("")
     print("".join(['-' for x in range(50)]))
     print(text)
+    strSteps = ['Step'] + [str(s) for s in range(1, nPredicts + 1)]
+    formatCommand = ' '.join(['{:>16}' for x in range(nPredicts + 1)])
     print(formatCommand.format(*strSteps))
-    print(formatCommand.format(*strLoss))
-    print(formatCommand.format(*strAcc))
-    print(formatCommand.format(*strMinMax))
+
+    for key in logs:
+
+        if key == "step":
+            continue
+
+        logs[key] /= logStep
+        strLog = [key] + ["{:10.6f}".format(s) for s in logs[key][1:]]
+        print(formatCommand.format(*strLog))
+
     print("".join(['-' for x in range(50)]))
 
-    locLoss[:] = 0
-    locAcc[:] = 0
-    locMinMax[:] = 0
+def publishLoss(data, name="", window_tokens=None, env="main"):
+
+    if window_tokens is None:
+        window_tokens = {key: None for key in data}
+
+    for key, plot in data.items():
+
+        if key in ("step"):
+            continue
+
+        nItems = len(plot)
+        inputY = np.array([plot[x] for x in range(nItems) if plot[x] is not None])
+        inputX = np.array([data["step"][x] for x in range(nItems) if plot[x] is not None])
+
+        opts = {'title': key + (' scale %d loss over time' % data["scale"]),
+                'legend': [key], 'xlabel': 'iteration', 'ylabel': 'loss'}
+
+        window_tokens[key] = vis.line(X=inputX, Y=inputY, opts=opts,
+                                      win=window_tokens[key], env=env)
+
+    return window_tokens
 
 def trainStep(dataset,
               batchSize,
@@ -210,9 +232,9 @@ def trainStep(dataset,
 
     logs = {"locLoss": np.zeros(nPredicts + 1),
             "locAcc": np.zeros(nPredicts + 1),
-            "locMinMax": np.zeros(nPredicts + 1)}
+            "locMinMax": np.zeros(nPredicts + 1),
+            "step":0}
 
-    nUpdate = 0
     for step, fulldata in enumerate(dataLoader):
 
         optimizer.zero_grad()
@@ -261,14 +283,11 @@ def trainStep(dataset,
 
         totLoss.backward()
         optimizer.step()
-        nUpdate+=1
+        logs["step"]+=1
 
-        if nUpdate % logStep == logStep -1:
-            updateLogs("Update %d, training loss:" % (nUpdate + 1), logs["locLoss"], logs["locAcc"], logs["locMinMax"], logStep)
+    updateAndShowLogs("Update %d, training loss:" % (logs["step"] + 1), logs, nPredicts)
 
-    lastStep = int(math.floor(nUpdate) / logStep) * logStep
-    if lastStep < nUpdate:
-        updateLogs("Update %d, training loss:" % (nUpdate + 1), logs["locLoss"], logs["locAcc"], logs["locMinMax"], nUpdate - lastStep)
+    return logs
 
 def valStep(dataset,
             batchSize,
@@ -292,6 +311,11 @@ def valStep(dataset,
     locLoss =  np.zeros(nPredicts + 1)
     locAcc = np.zeros(nPredicts + 1)
     locMinMax = np.zeros(nPredicts + 1)
+
+    logs = {"locLoss": np.zeros(nPredicts + 1),
+            "locAcc": np.zeros(nPredicts + 1),
+            "locMinMax": np.zeros(nPredicts + 1),
+            "step":0}
 
     for step, fulldata in enumerate(dataLoader):
 
@@ -328,22 +352,24 @@ def valStep(dataset,
             for gtSeq in range(n_devices):
                 lossK= lossCriterion(locPreds[:, :, gtSeq], labelLoss)
                 totLoss+=lossK
-                locLoss[k + 1] += lossK.item()
+                logs["locLoss"][k + 1] += lossK.item()
 
                 _, predLabel = locPreds[:, :, gtSeq].max(1)
                 _, worstLabel = locPreds[:, :, gtSeq].min(1)
                 accK = float(torch.sum(predLabel == 0).item()) / (n_devices * windowSize)
 
-                locAcc[k + 1] += accK
-                locMinMax[k + 1] += float(torch.sum(predLabel == worstLabel).item()) / (n_devices * windowSize)
+                logs["locAcc"][k + 1] += accK
+                logs["locMinMax"][k + 1] += float(torch.sum(predLabel == worstLabel).item()) / (n_devices * windowSize)
 
-    updateLogs("Validation loss:", locLoss, locAcc, locMinMax, step)
+    logs["step"] = step
+
+    updateAndShowLogs("Validation loss:", logs, nPredicts)
 
 def train(pathDataset,
           hiddenEncoder = 512,
           hiddenGar = 256,
-          nPredicts = 4,
-          nInputs = 124,
+          nPredicts = 12,
+          nInputs = 116,
           sizeSample = 160,
           nUpdates = 300000,
           negativeSamplingExt = 128):
@@ -387,28 +413,35 @@ def train(pathDataset,
     print("Dataset size: %d , running %d epochs" % (nWindows, nEpoch))
 
     #  Logs
-    lossLog = []
-    accLog = []
+    logsTrain = {"step":[0]}
 
     logStep = 1000
+
+    # Train / val split
+    sizeDataset = len(AudioBatchDataset(audioData, offset=sizeWindow, sizeWindow=sizeWindow))
+    indices = torch.randperm(sizeDataset)
+
+    # There are still some overlapps with this configuration
+    # TODO: find better
+    shareTrain = int(0.8*sizeDataset)
+    indicesTrain = indices[:shareTrain]
+    indicesVal = indices[shareTrain:]
 
     for epoch in range(nEpoch):
 
         print("Starting epoch %d" % epoch)
-        offset = random.randint(0, sizeWindow)
+        offset = random.randint(0, sizeWindow / 2)
 
         dataset = AudioBatchDataset(audioData,
                                     offset = offset,
                                     sizeWindow = sizeWindow)
+        trainDataset = Subset(dataset, indicesTrain)
+        valDataset = Subset(dataset, indicesVal)
 
-        sizeTrain = int(0.8 * len(dataset))
-        sizeVal = len(dataset) - sizeTrain
-        trainDataset, valDataset = torch.utils.data.random_split(dataset,
-                                                                 [sizeTrain,
-                                                                    sizeVal])
-
-        trainStep(trainDataset, batchSize, n_devices, nPredicts, negativeSamplingExt,
-                  gEncoder, gGar, wPrediction, optimizer,lossCriterion, logStep)
+        locLogs = trainStep(trainDataset, batchSize, n_devices,
+                            nPredicts, negativeSamplingExt,
+                            gEncoder, gGar, wPrediction, optimizer,
+                            lossCriterion, logStep)
 
         valStep(valDataset, batchSize, n_devices, nPredicts, negativeSamplingExt,
                 gEncoder, gGar, wPrediction, lossCriterion)
