@@ -185,22 +185,22 @@ def updateAndShowLogs(text, logs, nPredicts):
 
     print("".join(['-' for x in range(50)]))
 
-def publishLoss(data, name="", window_tokens=None, env="main"):
+def publishLogs(data, name="", window_tokens=None, env="main"):
 
     if window_tokens is None:
         window_tokens = {key: None for key in data}
 
     for key, plot in data.items():
 
-        if key in ("step"):
+        if key in ("step", "epoch"):
             continue
 
         nItems = len(plot)
-        inputY = np.array([plot[x] for x in range(nItems) if plot[x] is not None])
-        inputX = np.array([data["step"][x] for x in range(nItems) if plot[x] is not None])
+        inputY = np.array([plot[x] for x in range(nItems) if 0 is not None])
+        inputX = np.array([ data["epoch"][x] for x in range(nItems) if plot[x] is not None])
 
-        opts = {'title': key + (' scale %d loss over time' % data["scale"]),
-                'legend': [key], 'xlabel': 'iteration', 'ylabel': 'loss'}
+        opts = {'title': name + " "  + key,
+                'legend': [str(x) for x in range(len(plot[0]))], 'xlabel': 'epoch', 'ylabel': 'loss'}
 
         window_tokens[key] = vis.line(X=inputX, Y=inputY, opts=opts,
                                       win=window_tokens[key], env=env)
@@ -363,6 +363,8 @@ def valStep(dataset,
 
     updateAndShowLogs("Validation loss:", logs, nPredicts)
 
+    return logs
+
 def train(pathDataset,
           hiddenEncoder = 512,
           hiddenGar = 256,
@@ -411,7 +413,10 @@ def train(pathDataset,
     print("Dataset size: %d , running %d epochs" % (nWindows, nEpoch))
 
     #  Logs
-    logsTrain = {"step":[0]}
+    logsTrain = {"epoch":[]}
+    logsVal = {"epoch": []}
+    windowTokenTrain = None
+    windowTokenVal = None
 
     logStep = 1000
 
@@ -453,8 +458,24 @@ def train(pathDataset,
                             gEncoder, gGar, wPrediction, optimizer,
                             lossCriterion, logStep)
 
-        valStep(valDataset, batchSize, n_devices, nPredicts, negativeSamplingExt,
+        for key, value in locLogs.items():
+            if key not in logsTrain:
+                logsTrain[key] = [None for x in range(epoch)]
+            logsTrain[key].append(value)
+
+        logsTrain["epoch"].append(epoch)
+        windowTokenTrain = publishLogs(logsTrain, name = "CPC training", window_tokens = windowTokenTrain)
+
+        locLogs = valStep(valDataset, batchSize, n_devices, nPredicts, negativeSamplingExt,
                 gEncoder, gGar, wPrediction, lossCriterion)
+
+        for key, value in locLogs.items():
+            if key not in logsVal:
+                logsVal[key] = [None for x in range(epoch)]
+            logsVal[key].append(value)
+
+        logsVal["epoch"].append(epoch)
+        windowTokenVal = publishLogs(logsVal, name = "CPC validation", window_tokens=windowTokenVal)
 
         #trainSpeakerSeprarability(audioData, gEncoder.module, 5, 8,
         #                          trainEncoder = False)
@@ -463,7 +484,7 @@ def train(pathDataset,
 #The loss profile is indeed strange
 # Perform some trivial supervised task to check that everything works
 pathDB = '/private/home/mriviere/LibriSpeech/train-clean-100/'
-#train(pathDB)
+train(pathDB)
 
 hiddenEncoder = 512
 gEncoder = EncoderNetwork(sizeHidden = hiddenEncoder)
