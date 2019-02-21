@@ -11,7 +11,7 @@ import numpy as np
 
 import math
 import random
-
+import argparse
 import sys
 
 import visdom
@@ -89,7 +89,7 @@ def trainStep(dataLoader,
         cFeature, gtPredictions, otherEncoded = model(batchData,
                                                       nAR = cpcCriterion.nGtSequence)
 
-        allLosses, allAcc = cpcCriterion.getPredictions(cFeature, gtPredictions, otherEncoded, label)
+        allLosses, allAcc = cpcCriterion(cFeature, gtPredictions, otherEncoded, label)
 
         totLoss = allLosses.sum()
         totLoss.backward()
@@ -129,7 +129,7 @@ def valStep(dataLoader,
         if otherEncoded.size() ==0:
             print(batchData.size())
 
-        allLosses, allAcc = cpcCriterion.getPredictions(cFeature, gtPredictions, otherEncoded, label)
+        allLosses, allAcc = cpcCriterion(cFeature, gtPredictions, otherEncoded, label)
 
         if "locLoss_val" not in logs:
             logs["locLoss_val"] = np.zeros(allLosses.size(0))
@@ -144,24 +144,25 @@ def valStep(dataLoader,
 
     return logs
 
-def train(trainDataset,
+def run(trainDataset,
           valDataset,
           cpcModel,
           cpcCriterion,
-          sizeWindow = 20480,
-          nEpoch=10,
-          learningRate=2e-4,
-          pathCheckpoint = 'checkpoint.pt'):
+          optimizeModel,
+          nEpoch,
+          batchSize,
+          learningRate,
+          pathCheckpoint):
 
-    # GPU
-    batchSize = 8 * nGtSequence
-
-    #cpcModel = nn.DataParallel(cpcModel)
+    cpcCriterion.cuda()
     cpcModel.cuda()
 
     # Optimizer
-    g_params = list(cpcModel.parameters()) \
-             + list(cpcCriterion.parameters())
+    g_params = list(cpcCriterion.parameters())
+
+    if optimizeModel:
+        print("Optimizing model")
+        g_params+= list(cpcModel.parameters())
 
     # Nombre magique
     optimizer = torch.optim.Adam(g_params, lr=learningRate)
@@ -209,41 +210,67 @@ def train(trainDataset,
         stateDict = {"gEncoder": cpcModel.state_dict(),
                      "cpcCriterion": cpcCriterion.state_dict()}
 
-        torch.save(stateDict, pathCheckpoint)
+        #torch.save(stateDict, pathCheckpoint)
 
+if __name__ == "__main__":
 
-#The loss profile is indeed strange
-# Perform some trivial supervised task to check that everything works
-pathDB = '/private/home/mriviere/LibriSpeech/train-clean-100/'
+    # Run parameters
+    parser = argparse.ArgumentParser(description='Trainer')
+    parser.add_argument('--pathDB', type=str, default="/private/home/mriviere/LibriSpeech/train-clean-100/") #TODO: remove in the future
+    parser.add_argument('--hiddenEncoder', type=int, default=512)
+    parser.add_argument('--hiddenGar', type=int, default=256)
+    parser.add_argument('--nPredicts', type=int, default=4)
+    parser.add_argument('--negativeSamplingExt', type=int, default=128)
+    parser.add_argument('--nGtSequence', type=int, default=1)
+    parser.add_argument('--supervised', action='store_true')
+    parser.add_argument('--eval', action='store_true')
+    parser.add_argument('--load', type=str, default="")
+    parser.add_argument('--learningRate', type=float, default=2e-4)
+    parser.add_argument('--pathCheckpoint', type=str, default='checkpoint.pt')
+    parser.add_argument('--sizeWindow', type=int, default=20480)
+    parser.add_argument('--nEpoch', type=int, default=10)
 
-hiddenEncoder = 512
-hiddenGar = 256
-nPredicts =12
-negativeSamplingExt=128
-nGtSequence =1
-windowSize = 20480
+    args = parser.parse_args()
 
-supervised = False
+    audioData = AudioBatchData(args.pathDB)
+    cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar)
 
-audioData = AudioBatchData(pathDB)
-cpcModel = CPCModel(hiddenEncoder, hiddenGar)
+    if args.load !="":
+        print("Loading checkpoint " + args.load)
+        state_dict = torch.load(args.load)
+        cpcModel.load_state_dict(state_dict["gEncoder"])
 
-baseDataset = AudioBatchDataset(audioData, windowSize)
-sizeDataset = len(baseDataset)
-sizeTrain = int(0.8 * sizeDataset)
+    baseDataset = AudioBatchDataset(audioData, args.sizeWindow)
+    sizeDataset = len(baseDataset)
+    sizeTrain = int(0.8 * sizeDataset)
 
-indices = torch.randperm(sizeDataset)
-trainDataset = Subset(baseDataset, indices[:sizeTrain])
-valDataset = Subset(baseDataset, indices[sizeTrain:])
-
-if supervised:
-    cpcCriterion = SpeakerCriterion(hiddenGar, audioData.getNSpeakers(), 8)
     indices = torch.randperm(sizeDataset)
+    trainDataset = Subset(baseDataset, indices[:sizeTrain])
+    valDataset = Subset(baseDataset, indices[sizeTrain:])
 
-else:
-    cpcCriterion = CPCUnsupersivedCriterion(nPredicts, hiddenGar,
-                                            hiddenEncoder,
-                                            negativeSamplingExt,
-                                            nGtSequence)
+    batchSize = 8 * args.nGtSequence
 
-train(trainDataset, valDataset, cpcModel, cpcCriterion)
+    if args.supervised:
+        cpcCriterion = SpeakerCriterion(args.hiddenGar, audioData.getNSpeakers(), 8)
+        indices = torch.randperm(sizeDataset)
+
+    else:
+        cpcCriterion = CPCUnsupersivedCriterion(args.nPredicts, args.hiddenGar,
+                                                args.hiddenEncoder,
+                                                args.negativeSamplingExt,
+                                                args.nGtSequence)
+
+    optimizeModel = not args.eval
+
+    if args.eval:
+        print("Evaluation mode")
+
+    run(trainDataset,
+        valDataset,
+        cpcModel,
+        cpcCriterion,
+        optimizeModel,
+        args.nEpoch,
+        batchSize,
+        args.learningRate,
+        args.pathCheckpoint)
