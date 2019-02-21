@@ -6,10 +6,11 @@ import torch.nn.functional as F
 # Networks
 ###########################################
 
+
 class EncoderNetwork(nn.Module):
 
     def __init__(self,
-                 sizeHidden = 512):
+                 sizeHidden=512):
 
         super(EncoderNetwork, self).__init__()
         self.conv0 = nn.Conv1d(1, sizeHidden, 10, stride=5, padding=3)
@@ -37,6 +38,7 @@ class EncoderNetwork(nn.Module):
 
         return x
 
+
 class AutoregressiveNetwork(nn.Module):
 
     def __init__(self,
@@ -45,7 +47,7 @@ class AutoregressiveNetwork(nn.Module):
 
         super(AutoregressiveNetwork, self).__init__()
 
-        self.baseNet = nn.GRU(dimEncoded, dimOutput, num_layers =1)
+        self.baseNet = nn.GRU(dimEncoded, dimOutput, num_layers=1)
 
     def getDimOutput(self):
         return self.baseNet.hidden_size
@@ -59,31 +61,33 @@ class AutoregressiveNetwork(nn.Module):
 # Model
 ###########################################
 
+
 class CPCModel(nn.Module):
 
-        def __init__(self,
-                     dimEncoded,
-                     dimAR):
+    def __init__(self,
+                 dimEncoded,
+                 dimAR):
 
-            super(CPCModel, self).__init__()
-            self.gEncoder = EncoderNetwork(dimEncoded)
-            self.gAR = AutoregressiveNetwork(dimEncoded, dimAR)
+        super(CPCModel, self).__init__()
+        self.gEncoder = EncoderNetwork(dimEncoded)
+        self.gAR = AutoregressiveNetwork(dimEncoded, dimAR)
 
-        def forward(self, batchData, nAR = 0):
+    def forward(self, batchData, nAR=0):
 
-            encodedData = self.gEncoder(batchData).permute(2, 0, 1)
-            dimEncoded = self.gEncoder.getDimOutput()
+        encodedData = self.gEncoder(batchData).permute(2, 0, 1)
+        dimEncoded = self.gEncoder.getDimOutput()
 
-            if nAR == 0:
-                return encodedData
+        if nAR == 0:
+            return encodedData
 
-            if nAR ==-1:
-                nAR = encodedData.size(1)
+        if nAR == -1:
+            nAR = encodedData.size(1)
 
-            gtPredictions = encodedData[:,:nAR, :].view(-1, nAR, dimEncoded)
-            otherEncoded = encodedData[:, nAR:, :].contiguous().view(-1, dimEncoded)
+        gtPredictions = encodedData[:, :nAR, :].view(-1, nAR, dimEncoded)
+        otherEncoded = encodedData[:, nAR:,
+                                   :].contiguous().view(-1, dimEncoded)
 
-            #We are going to perform one prediction sequence per GPU
-            cFeature = self.gAR(gtPredictions)
+        # We are going to perform one prediction sequence per GPU
+        cFeature = self.gAR(gtPredictions)
 
-            return cFeature, gtPredictions, otherEncoded
+        return cFeature, gtPredictions, otherEncoded

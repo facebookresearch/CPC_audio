@@ -7,6 +7,7 @@ import numpy as np
 # Criterion
 ###############
 
+
 class PredictionNetwork(nn.Module):
 
     def __init__(self,
@@ -19,7 +20,8 @@ class PredictionNetwork(nn.Module):
 
         for i in range(nPredicts):
 
-            self.predictors.append(nn.Linear(dimOutputAR, dimOutputEncoder, bias = False))
+            self.predictors.append(
+                nn.Linear(dimOutputAR, dimOutputEncoder, bias=False))
 
     def forward(self, c, candidates):
 
@@ -36,6 +38,7 @@ class PredictionNetwork(nn.Module):
             out.append(outK)
         return out
 
+
 class CPCUnsupersivedCriterion(nn.Module):
 
     def __init__(self,
@@ -46,7 +49,8 @@ class CPCUnsupersivedCriterion(nn.Module):
                  nGtSequence):
 
         super(CPCUnsupersivedCriterion, self).__init__()
-        self.wPrediction = PredictionNetwork(nPredicts, dimOutputAR, dimOutputEncoder)
+        self.wPrediction = PredictionNetwork(
+            nPredicts, dimOutputAR, dimOutputEncoder)
         self.nPredicts = nPredicts
         self.negativeSamplingExt = negativeSamplingExt
         self.nGtSequence = nGtSequence
@@ -67,8 +71,8 @@ class CPCUnsupersivedCriterion(nn.Module):
 
         # The ground truth data will always be the first item
         labelLoss = torch.zeros((windowSize),
-                                dtype = torch.long,
-                                device = encodedData.device)
+                                dtype=torch.long,
+                                device=encodedData.device)
 
         extIdx = np.random.randint(0, nNegativeExt,
                                    size=(negativeSamplingExt * windowSize * self.nGtSequence))
@@ -87,10 +91,11 @@ class CPCUnsupersivedCriterion(nn.Module):
             else:
                 posSeq = gtPredictions[k:]
 
-            posSeq = posSeq.view(posSeq.size(0), 1, posSeq.size(1), posSeq.size(2))
+            posSeq = posSeq.view(posSeq.size(
+                0), 1, posSeq.size(1), posSeq.size(2))
 
             # Full sequence
-            fullSeq = torch.cat((posSeq, negExt), dim =1)
+            fullSeq = torch.cat((posSeq, negExt), dim=1)
             outputs.append(fullSeq)
 
         return outputs, labelLoss
@@ -99,7 +104,8 @@ class CPCUnsupersivedCriterion(nn.Module):
 
         windowSize = gtPredictions.size(0) - self.nPredicts
         cFeature = cFeature[:windowSize]
-        sampledData, labelLoss = self.sample(gtPredictions, otherEncoded, windowSize)
+        sampledData, labelLoss = self.sample(
+            gtPredictions, otherEncoded, windowSize)
 
         predictions = self.wPrediction(cFeature, sampledData)
 
@@ -107,12 +113,14 @@ class CPCUnsupersivedCriterion(nn.Module):
         outAcc = []
         for k, locPreds in enumerate(predictions):
             for gtSeq in range(self.nGtSequence):
-                lossK= self.lossCriterion(locPreds[:, :, gtSeq], labelLoss)
+                lossK = self.lossCriterion(locPreds[:, :, gtSeq], labelLoss)
                 outLosses.append(lossK.view(-1))
                 _, predsIndex = locPreds[:, :, gtSeq].max(1)
-                outAcc.append(torch.sum(predsIndex == 0).double().view(-1) / (self.nGtSequence * windowSize))
+                outAcc.append(torch.sum(predsIndex == 0).double(
+                ).view(-1) / (self.nGtSequence * windowSize))
 
         return torch.cat(outLosses, dim=0), torch.cat(outAcc, dim=0)
+
 
 class SpeakerCriterion(nn.Module):
 
@@ -120,12 +128,13 @@ class SpeakerCriterion(nn.Module):
 
         super(SpeakerCriterion, self).__init__()
 
-        self.linearSpeakerClassifier = nn.Linear(dimEncoder * nSample, nSpeakers)
+        self.linearSpeakerClassifier = nn.Linear(
+            dimEncoder * nSample, nSpeakers)
         self.lossCriterion = nn.CrossEntropyLoss()
         self.nGtSequence = -1
         self.nSample = nSample
 
-    def foward(self, cFeature, gtPredictions, otherEncoded, label):
+    def forward(self, cFeature, gtPredictions, otherEncoded, label):
 
         nWindow = cFeature.size(0)
         nSplits = int(nWindow / self.nSample)
@@ -136,7 +145,7 @@ class SpeakerCriterion(nn.Module):
 
         # cFeature.size() : seq Size x batchSize x hidden size
         batchSize = cFeature.size(1)
-        cFeature = cFeature[:nSampledLabels].permute(1,0,2)
+        cFeature = cFeature[:nSampledLabels].permute(1, 0, 2)
 
         cFeature = cFeature.contiguous().view(nSplits * batchSize, -1)
 
