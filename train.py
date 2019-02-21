@@ -1,611 +1,276 @@
 import os
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from torch.utils.data import Subset
 
-from torch.utils.data import Dataset
+from dataset import AudioBatchData, AudioBatchDataset
+from model import CPCModel
+from criterion import CPCUnsupersivedCriterion, SpeakerCriterion
 
 import numpy as np
 
-import torchaudio
 import math
 import random
-
+import argparse
 import sys
 
-###########################################
-# Dataset
-###########################################
-
-class AudioBatchData:
-
-    # Work on this and on the sampler
-    def __init__(self,
-                 path):
-
-        self.dbPath = path
-        self.loadAll()
-
-    def loadAll(self):
-
-        # Speakers
-        self.speakers = [f for f in os.listdir(self.dbPath) \
-                         if os.path.isdir(os.path.join(self.dbPath, f))]
-
-        self.speakers =self.speakers[:10]
-
-        # Labels
-        self.speakerLabel = [0]
-        self.seqLabel = [0]
-
-        # Data
-        self.data = []
-
-        itemIndex = 0
-        seqIndex = 0
-        speakerIndex=0
-
-        for indexSpeaker, speaker in enumerate(self.speakers):
-            refPath = os.path.join(self.dbPath, speaker)
-            chapters = [ f for f in os.listdir(refPath) \
-                        if os.path.isdir(os.path.join(refPath, f))]
-
-            for chapter in chapters:
-                chapterPath = os.path.join(refPath, chapter)
-                #Debugging only
-
-                for seqName in os.listdir(chapterPath):
-                    if os.path.splitext(seqName)[1] != '.flac':
-                        continue
-
-                    seqPath = os.path.join(chapterPath, seqName)
-                    seq = torchaudio.load(seqPath)[0].view(-1)
-
-                    sizeSeq = seq.size(0)
-                    seqIndex+= sizeSeq
-                    speakerIndex+= sizeSeq
-
-                    self.data.append(seq)
-                    self.seqLabel.append(seqIndex)
-                    itemIndex+=1
-
-            self.speakerLabel.append(speakerIndex)
-
-        self.data = torch.cat(self.data, dim = 0)
-
-    def getLabel(self, idx):
-
-       idSpeaker = next(x[0] for x in enumerate(self.speakerLabel) if x[1] >= idx) -1
-       return idSpeaker
-
-    def __len__(self):
-        return len(self.data)
-
-    def getNSpeakers(self):
-        return len(self.speakers)
-
-class AudioBatchDataset(Dataset):
-
-    def __init__(self,
-                 batchData,
-                 offset =0,
-                 sizeWindow=2048,
-                 maxOffset = -1):
-
-        self.batchData = batchData
-        self.offset = offset
-        self.sizeWindow = sizeWindow
-        self.maxOffset = maxOffset
-
-        if self.maxOffset <= 0:
-            self.maxOffset = len(self.batchData)
-
-    def __len__(self):
-
-        return int(math.floor((self.maxOffset - self.offset) / self.sizeWindow))
-
-    def __getitem__(self, idx):
-
-        windowOffset = self.offset + idx * self.sizeWindow
-        speakerLabel = torch.tensor(self.batchData.getLabel(windowOffset), dtype=torch.long)
-
-        return self.batchData.data[windowOffset:(self.sizeWindow + windowOffset)].view(1, -1), speakerLabel
-
-###########################################
-# Networks
-###########################################
-
-class EncoderNetwork(nn.Module):
-
-    def __init__(self,
-                 sizeHidden = 512):
-
-        super(EncoderNetwork, self).__init__()
-        self.conv0 = nn.Conv1d(1, sizeHidden, 10, stride=5)
-        self.batchNorm0 = nn.BatchNorm1d(sizeHidden)
-        self.conv1 = nn.Conv1d(sizeHidden, sizeHidden, 8, stride=4)
-        self.batchNorm1 = nn.BatchNorm1d(sizeHidden)
-        self.conv2 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2)
-        self.batchNorm2 = nn.BatchNorm1d(sizeHidden)
-        self.conv3 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2)
-        self.batchNorm3 = nn.BatchNorm1d(sizeHidden)
-        self.conv4 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2)
-        self.batchNorm4 = nn.BatchNorm1d(sizeHidden)
-
-    def getDimOutput(self):
-
-        return self.conv4.out_channels
-
-    def forward(self, x):
-
-        x = F.relu(self.batchNorm0(self.conv0(x)))
-        x = F.relu(self.batchNorm1(self.conv1(x)))
-        x = F.relu(self.batchNorm2(self.conv2(x)))
-        x = F.relu(self.batchNorm3(self.conv3(x)))
-        x = F.relu(self.batchNorm4(self.conv4(x)))
-
-        return x
-
-class AutoregressiveNetwork(nn.Module):
-
-    def __init__(self,
-                 dimEncoded,
-                 dimOutput):
-
-        super(AutoregressiveNetwork, self).__init__()
-
-        self.baseNet = nn.GRU(dimEncoded, dimOutput, num_layers =1)
-
-    def getDimOutput(self):
-        return self.baseNet.hidden_size
-
-    def forward(self, x):
-
-        return self.baseNet(x)[0]
-
-class PredictionNetwork(nn.Module):
-
-    def __init__(self,
-                 nPredicts,
-                 dimOutputAR,
-                 dimOutputEncoder):
-
-        super(PredictionNetwork, self).__init__()
-        self.predictors = nn.ModuleList()
-
-        for i in range(nPredicts):
-
-            self.predictors.append(nn.Linear(dimOutputAR, dimOutputEncoder, bias = False))
-
-    def forward(self, c, candidates):
-
-        assert(len(candidates) == len(self.predictors))
-
-        out = []
-        for k in range(len(self.predictors)):
-
-            # torch.nn.Bilinear ? Replace
-            locC = self.predictors[k](c)
-            locC = locC.view(locC.size(0), 1, locC.size(1), locC.size(2))
-            outK = (locC*candidates[k]).mean(dim=3)
-
-            out.append(outK)
-
-        return out
-
-###########################################
-# Sampling
-###########################################
-
-def getNegativeSamples(encodedData,
-                       windowSize,
-                       negativeSamplingExt,
-                       nGtSequence):
-
-    # Correct the number of negative samples to make sure that the number of
-    # indices to draw is lower than the available number of indices
-    batchSize = encodedData.size(1)
-    negativeSamplingExt = min(negativeSamplingExt, windowSize * (batchSize - nGtSequence))
-
-    # The ground truth data will always be the first item
-    labelLoss = torch.zeros((windowSize),
-                            dtype = torch.long,
-                            device = encodedData.device)
-
-    #Sample on all encoded units
-    dimEncoded = encodedData.size(2)
-    negativeSamplesExt = encodedData[:windowSize, nGtSequence:, :].contiguous().view(-1, dimEncoded)
-    nNegativeExt = negativeSamplesExt.size(0)
-
-    extIdx = np.random.randint(0, nNegativeExt,
-                               size=(negativeSamplingExt * windowSize * nGtSequence))
-
-    negExt = negativeSamplesExt[extIdx].view(windowSize,
-                                             negativeSamplingExt,
-                                             nGtSequence,
-                                             dimEncoded)
-
-    return negExt, labelLoss
-
-def getFullSamples(negativeSample,
-                   gtPredictions,
-                   nPredicts):
-
-    outputs = []
-    for k in range(1, nPredicts + 1):
-
-        # Positive samples
-        if k < nPredicts:
-            posSeq = gtPredictions[k:-(nPredicts-k)]
-        else:
-            posSeq = gtPredictions[k:]
-
-        posSeq = posSeq.view(posSeq.size(0), 1, posSeq.size(1), posSeq.size(2))
-
-        # Full sequence
-        fullSeq = torch.cat((posSeq, negativeSample), dim =1)
-        outputs.append(fullSeq)
-
-    return outputs
-
-###########################################
-# Metric
-###########################################
-
-#TODO: correct. With the BatchNorm involved we need to use the train() / eval()
-# modes
-def trainSpeakerSeprarability(audioData,
-                              gEncoder,
-                              gAR,
-                              nEpoch,
-                              sizeAudioSample,
-                              nSamples,
-                              trainEncoder = False):
-
-    nSpeakers = dataset.getNSpeakers()
-    print("%d images, %d speakers" % (len(audioData), nSpeakers))
-
-    # Get
-    linearSpeakerClassifier = nn.Linear(gEncoder.getDimOutput() * 8, nSpeakers)
-
-    criterion = nn.CrossEntropyLoss()
-
-    batchSize = 16
-    n_devices = 1
-    device = torch.device("cuda:0")
-
-    lr = 2e-4
-
-    gEncoder = nn.DataParallel(gEncoder)
-    gEncoder.to(device)
-    gAR = nn.DataParallel(gAR)
-    gAR.to(device)
-    linearSpeakerClassifier=nn.DataParallel(linearSpeakerClassifier)
-    linearSpeakerClassifier.to(device)
-
-    optimizerClassifier = torch.optim.Adam(list(linearSpeakerClassifier.parameters()), lr=lr)
-    g_params = list(gEncoder.parameters()) \
-             + list(gAR.parameters())
-
-    optimizerG = torch.optim.Adam(g_params, lr=lr)
-
-    schedulerC = torch.optim.lr_scheduler.StepLR(optimizerClassifier, step_size=3, gamma=0.1)
-    schedulerG = torch.optim.lr_scheduler.StepLR(optimizerG, step_size=3, gamma=0.1)
-
-    for epoch in range(nEpoch):
-
-        print("Epoch %d" % epoch)
-
-        for isTrain in [True, False]:
-
-            locLoss = 0
-            locAcc = 0
-            dataLoader = torch.utils.data.DataLoader(datasetMatchTrain[isTrain],
-                                                     batch_size=batchSize,
-                                                     shuffle=True,
-                                                     num_workers=n_devices)
-            nStep = 0
-
-            for fullData in dataLoader:
-
-                optimizerClassifier.zero_grad()
-                optimizerG.zero_grad()
-
-                batch, labels = fullData
-                batch = batch.to(device)
-                labels = labels.to(device)
-
-                encodedData = gEncoder(batch)
-                encodedData = encodedData.contiguous().view(encodedData.size(0), -1)
-
-                predictedLabels = linearSpeakerClassifier(encodedData)
-                labels = labels.view(-1)
-                _, predictions = predictedLabels.max(1)
-
-                loss = criterion(predictedLabels, labels)
-                loss.backward()
-
-                locLoss+=loss.item()
-                locAcc+= float((predictions == labels).sum().item()) / (labels.size(0))
-
-                optimizerClassifier.step()
-
-                if trainEncoder:
-                    optimizerG.step()
-                nStep+=1
-
-            locLoss /= nStep
-            locAcc /= nStep
-            if isTrain:
-                print("Loss train %f " % locLoss)
-                print("Acc train %f" %locAcc)
-            else:
-                print("Loss val %f " % locLoss)
-                print("Acc val %f" %locAcc)
-
-            print("")
-            schedulerG.step()
-            schedulerG.step()
+import visdom
+vis = visdom.Visdom()
 
 ###########################################
 # Main
 ###########################################
 
-def updateLogs(text, locLoss, locAcc, locMinMax, logStep):
+def updateAndShowLogs(text, logs, nPredicts):
 
-    locLoss /= logStep
-    locAcc /= logStep
-    locMinMax /= logStep
-
-    nPredicts = len(locLoss)
-
-    strSteps = ['Step'] + [str(s) for s in range(1, nPredicts)]
-    strLoss = ['Loss'] + ["{:10.6f}".format(s) for s in locLoss[1:]]
-    strAcc = ['Accuracy'] + ["{:10.6f}".format(s) for s in locAcc[1:]]
-    strMinMax = ['Flat share'] + ["{:10.6f}".format(s) for s in locMinMax[1:]]
-    formatCommand = ' '.join(['{:>16}' for x in range(nPredicts)])
+    logStep = logs["step"]
 
     print("")
     print("".join(['-' for x in range(50)]))
     print(text)
+    strSteps = ['Step'] + [str(s) for s in range(1, nPredicts + 1)]
+    formatCommand = ' '.join(['{:>16}' for x in range(nPredicts + 1)])
     print(formatCommand.format(*strSteps))
-    print(formatCommand.format(*strLoss))
-    print(formatCommand.format(*strAcc))
-    print(formatCommand.format(*strMinMax))
+
+    for key in logs:
+
+        if key == "step":
+            continue
+
+        logs[key] /= logStep
+        strLog = [key] + ["{:10.6f}".format(s) for s in logs[key]]
+        print(formatCommand.format(*strLog))
+
     print("".join(['-' for x in range(50)]))
 
-    locLoss[:] = 0
-    locAcc[:] = 0
-    locMinMax[:] = 0
+def publishLogs(data, name="", window_tokens=None, env="main"):
 
-def trainStep(dataset,
-              batchSize,
-              n_devices,
-              nPredicts,
-              negativeSamplingExt,
-              gEncoder,
-              gGar,
-              wPrediction,
-              optimizer,
-              lossCriterion,
-              logStep):
+    if window_tokens is None:
+        window_tokens = {key: None for key in data}
 
-    gEncoder.train()
-    gGar.train()
-    wPrediction.train()
+    for key, plot in data.items():
 
-    dataLoader = torch.utils.data.DataLoader(dataset,
-                                             batch_size=batchSize,
-                                             shuffle=True,
-                                             num_workers=n_devices)
+        if key in ("step", "epoch"):
+            continue
 
-    locLoss =  np.zeros(nPredicts + 1)
-    locAcc = np.zeros(nPredicts + 1)
-    locMinMax = np.zeros(nPredicts + 1)
+        nItems = len(plot)
+        inputY = np.array([plot[x] for x in range(nItems) if 0 is not None])
+        inputX = np.array([ data["epoch"][x] for x in range(nItems) if plot[x] is not None])
 
-    nUpdate = 0
+        opts = {'title': name + " "  + key,
+                'legend': [str(x) for x in range(len(plot[0]))], 'xlabel': 'epoch', 'ylabel': 'loss'}
+
+        window_tokens[key] = vis.line(X=inputX, Y=inputY, opts=opts,
+                                      win=window_tokens[key], env=env)
+
+    return window_tokens
+
+def trainStep(dataLoader,
+              model,
+              cpcCriterion,
+              optimizer):
+
+    model.train()
+    cpcCriterion.train()
+
+    logs = {"step":0}
+
     for step, fulldata in enumerate(dataLoader):
 
         optimizer.zero_grad()
 
-        batchData, _ = fulldata
+        batchData, label = fulldata
 
-        if batchData.size(0) < batchSize:
+        if batchData.size(0) <= cpcCriterion.nGtSequence:
             continue
 
-        batchData = batchData.to(gEncoder.output_device)
-        encodedData = gEncoder(batchData).permute(2, 0, 1)
+        batchData = batchData.cuda()
+        label = label.cuda()
+        cFeature, gtPredictions, otherEncoded = model(batchData,
+                                                      nAR = cpcCriterion.nGtSequence)
 
-        #Data have now the following structure (seq, batchSize, nChannels)
-        hiddenEncoder = encodedData.size(2)
+        allLosses, allAcc = cpcCriterion(cFeature, gtPredictions, otherEncoded, label)
 
-        #We are going to perform one prediction sequence per GPU
-        gtPredictions = encodedData[:,:n_devices, :].view(-1, n_devices, hiddenEncoder)
-        inputGar = encodedData[:-nPredicts, :n_devices, :].view(-1, n_devices, hiddenEncoder)
-
-        cFeature = gGar(inputGar)
-
-        windowSize = inputGar.size(0)
-
-        negExt, labelLoss = getNegativeSamples(encodedData,
-                                               windowSize,
-                                               negativeSamplingExt,
-                                               n_devices)
-        fullSeq = getFullSamples(negExt,
-                                 gtPredictions,
-                                 nPredicts)
-        totLoss = 0
-        predictions = wPrediction(cFeature, fullSeq)
-
-        for k, locPreds in enumerate(predictions):
-            for gtSeq in range(n_devices):
-                lossK= lossCriterion(locPreds[:, :, gtSeq], labelLoss)
-                totLoss+=lossK
-                locLoss[k + 1] += lossK.item()
-
-                _, predLabel = locPreds[:, :, gtSeq].max(1)
-                _, worstLabel = locPreds[:, :, gtSeq].min(1)
-                accK = float(torch.sum(predLabel == 0).item()) / (n_devices * windowSize)
-
-                locAcc[k + 1] += accK
-                locMinMax[k + 1] += float(torch.sum(predLabel == worstLabel).item()) / (n_devices * windowSize)
-
+        totLoss = allLosses.sum()
         totLoss.backward()
         optimizer.step()
-        nUpdate+=1
 
-        if nUpdate % logStep == logStep -1:
-            updateLogs("Update %d, training loss:" % (nUpdate + 1), locLoss, locAcc, locMinMax, logStep)
+        if "locLoss_train" not in logs:
+            logs["locLoss_train"] = np.zeros(allLosses.size(0))
+            logs["locAcc_train"] = np.zeros(allLosses.size(0))
 
-    lastStep = int(math.floor(nUpdate) / logStep) * logStep
-    if lastStep < nUpdate:
-        updateLogs("Update %d, training loss:" % (nUpdate + 1), locLoss, locAcc, locMinMax, nUpdate - lastStep)
+        logs["step"]+=1
+        logs["locLoss_train"]+= allLosses.detach().cpu().numpy()
+        logs["locAcc_train"] += allAcc.cpu().numpy()
 
-def valStep(dataset,
-            batchSize,
-            n_devices,
-            nPredicts,
-            negativeSamplingExt,
-            gEncoder,
-            gGar,
-            wPrediction,
-            lossCriterion):
+    updateAndShowLogs("Update %d, training loss:" % (logs["step"] + 1), logs, logs["locLoss_train"].shape[0])
+    return logs
 
-    gEncoder.eval()
-    gGar.eval()
-    wPrediction.eval()
+def valStep(dataLoader,
+            model,
+            cpcCriterion):
 
-    dataLoader = torch.utils.data.DataLoader(dataset,
-                                             batch_size=batchSize,
-                                             shuffle=True,
-                                             num_workers=n_devices)
+    model.eval()
+    cpcCriterion.eval()
 
-    locLoss =  np.zeros(nPredicts + 1)
-    locAcc = np.zeros(nPredicts + 1)
-    locMinMax = np.zeros(nPredicts + 1)
-
+    logs = {"step":0}
     for step, fulldata in enumerate(dataLoader):
 
-        batchData, _ = fulldata
+        batchData, label = fulldata
 
-        if batchData.size(0) < batchSize:
+        if batchData.size(0) <= cpcCriterion.nGtSequence:
             continue
 
-        batchData = batchData.to(gEncoder.output_device)
-        encodedData = gEncoder(batchData).permute(2, 0, 1)
+        batchData = batchData.cuda()
+        label =label.cuda()
+        cFeature, gtPredictions, otherEncoded = model(batchData,
+                                                      nAR = cpcCriterion.nGtSequence)
 
-        #Data have now the following structure (seq, batchSize, nChannels)
-        hiddenEncoder = encodedData.size(2)
+        if otherEncoded.size() ==0:
+            print(batchData.size())
 
-        #We are going to perform one prediction sequence per GPU
-        gtPredictions = encodedData[:,:n_devices, :].view(-1, n_devices, hiddenEncoder)
-        inputGar = encodedData[:-nPredicts, :n_devices, :].view(-1, n_devices, hiddenEncoder)
+        allLosses, allAcc = cpcCriterion(cFeature, gtPredictions, otherEncoded, label)
 
-        cFeature = gGar(inputGar)
+        if "locLoss_val" not in logs:
+            logs["locLoss_val"] = np.zeros(allLosses.size(0))
+            logs["locAcc_val"] = np.zeros(allLosses.size(0))
 
-        windowSize = inputGar.size(0)
+        logs["step"]+=1
+        logs["locLoss_val"]+= allLosses.detach().cpu().numpy()
+        logs["locAcc_val"] += allAcc.cpu().numpy()
 
-        negExt, labelLoss = getNegativeSamples(encodedData,
-                                               windowSize,
-                                               negativeSamplingExt,
-                                               n_devices)
-        fullSeq = getFullSamples(negExt,
-                                 gtPredictions,
-                                 nPredicts)
-        totLoss = 0
-        predictions = wPrediction(cFeature, fullSeq)
+    logs["step"] = step
+    updateAndShowLogs("Validation loss:", logs, logs["locLoss_val"].shape[0])
 
-        for k, locPreds in enumerate(predictions):
-            for gtSeq in range(n_devices):
-                lossK= lossCriterion(locPreds[:, :, gtSeq], labelLoss)
-                totLoss+=lossK
-                locLoss[k + 1] += lossK.item()
+    return logs
 
-                _, predLabel = locPreds[:, :, gtSeq].max(1)
-                _, worstLabel = locPreds[:, :, gtSeq].min(1)
-                accK = float(torch.sum(predLabel == 0).item()) / (n_devices * windowSize)
+def run(trainDataset,
+          valDataset,
+          cpcModel,
+          cpcCriterion,
+          optimizeModel,
+          nEpoch,
+          batchSize,
+          learningRate,
+          pathCheckpoint):
 
-                locAcc[k + 1] += accK
-                locMinMax[k + 1] += float(torch.sum(predLabel == worstLabel).item()) / (n_devices * windowSize)
-
-    updateLogs("Validation loss:", locLoss, locAcc, locMinMax, step)
-
-def train(pathDataset,
-          hiddenEncoder = 512,
-          hiddenGar = 256,
-          nPredicts = 4,
-          nInputs = 124,
-          sizeSample = 160,
-          nUpdates = 300000,
-          negativeSamplingExt = 128):
-
-    # Build the dataset
-    audioData = AudioBatchData(pathDataset)
-
-    # Initialize the networks
-    gEncoder = EncoderNetwork(sizeHidden = hiddenEncoder)
-    gGar = AutoregressiveNetwork(hiddenEncoder, hiddenGar)
-    wPrediction = PredictionNetwork(nPredicts, hiddenGar, hiddenEncoder)
-
-    # Loss criterion
-    lossCriterion = nn.CrossEntropyLoss()
-
-    # GPU
-    device = torch.device("cuda:0")
-    n_devices = 1#torch.cuda.device_count()
-    batchSize = 8 * n_devices
-
-    gEncoder = nn.DataParallel(gEncoder)
-    gGar = nn.DataParallel(gGar)
-    wPrediction = nn.DataParallel(wPrediction)
-
-    gEncoder.to(device)
-    gGar.to(device)
-    wPrediction.to(device)
+    cpcCriterion.cuda()
+    cpcModel.cuda()
 
     # Optimizer
-    g_params = list(gEncoder.parameters()) \
-             + list(gGar.parameters()) \
-             + list(wPrediction.parameters())
+    g_params = list(cpcCriterion.parameters())
 
-    optimizer = torch.optim.Adam(g_params, lr=2e-4)
+    if optimizeModel:
+        print("Optimizing model")
+        g_params+= list(cpcModel.parameters())
 
-    # Estimate the number of epochs to perform
-    sizeWindow = sizeSample * (nInputs + nPredicts)
-    nWindows = len(audioData) / sizeWindow
-    nEpoch = 10
+    # Nombre magique
+    optimizer = torch.optim.Adam(g_params, lr=learningRate)
 
-    print("Dataset size: %d , running %d epochs" % (nWindows, nEpoch))
+    print("Dataset size: %d bits, running %d epochs" % (len(audioData), nEpoch))
 
     #  Logs
-    lossLog = []
-    accLog = []
+    logs = {"epoch":[]}
+    windowToken = None
 
-    logStep = 1000
+    # Train / val split : by speakers
+    nSpeakers = audioData.getNSpeakers()
+    speakerTrain = int(0.8 * nSpeakers)
+    baseOffsetTrain = audioData.getSpeakerOffset(speakerTrain)
 
     for epoch in range(nEpoch):
 
         print("Starting epoch %d" % epoch)
-        offset = random.randint(0, sizeWindow)
 
-        dataset = AudioBatchDataset(audioData,
-                                    offset = offset,
-                                    sizeWindow = sizeWindow)
+        print("Training dataset %d samples, Validation dataset %d samples" % \
+            (len(trainDataset), len(valDataset)))
 
-        sizeTrain = int(0.8 * len(dataset))
-        sizeVal = len(dataset) - sizeTrain
-        trainDataset, valDataset = torch.utils.data.random_split(dataset,
-                                                                 [sizeTrain,
-                                                                    sizeVal])
+        trainLoader = torch.utils.data.DataLoader(trainDataset,
+                                                  batch_size=batchSize,
+                                                  shuffle=True,
+                                                  num_workers=2)
 
-        trainStep(trainDataset, batchSize, n_devices, nPredicts, negativeSamplingExt,
-                  gEncoder, gGar, wPrediction, optimizer,lossCriterion, logStep)
+        locLogsTrain = trainStep(trainLoader, cpcModel, cpcCriterion, optimizer)
 
-        valStep(valDataset, batchSize, n_devices, nPredicts, negativeSamplingExt,
-                gEncoder, gGar, wPrediction, lossCriterion)
+        valLoader = torch.utils.data.DataLoader(valDataset,
+                                                batch_size=batchSize,
+                                                shuffle=True,
+                                                num_workers=2)
+        locLogsVal = valStep(valLoader, cpcModel, cpcCriterion)
 
+        for key, value in dict(locLogsTrain, **locLogsVal).items():
+            if key not in logs:
+                logs[key] = [None for x in range(epoch)]
+            logs[key].append(value)
 
-#The loss profile is indeed strange
-# Perform some trivial supervised task to check that everything works
-pathDB = '/private/home/mriviere/LibriSpeech/train-clean-100/'
-train(pathDB)
+        logs["epoch"].append(epoch)
+        windowToken = publishLogs(logs, name = "CPC validation", window_tokens=windowToken)
+
+        # Dirty checkpoint save
+        stateDict = {"gEncoder": cpcModel.state_dict(),
+                     "cpcCriterion": cpcCriterion.state_dict()}
+
+        #torch.save(stateDict, pathCheckpoint)
+
+if __name__ == "__main__":
+
+    # Run parameters
+    parser = argparse.ArgumentParser(description='Trainer')
+    parser.add_argument('--pathDB', type=str, default="/private/home/mriviere/LibriSpeech/train-clean-100/") #TODO: remove in the future
+    parser.add_argument('--hiddenEncoder', type=int, default=512)
+    parser.add_argument('--hiddenGar', type=int, default=256)
+    parser.add_argument('--nPredicts', type=int, default=4)
+    parser.add_argument('--negativeSamplingExt', type=int, default=128)
+    parser.add_argument('--nGtSequence', type=int, default=1)
+    parser.add_argument('--supervised', action='store_true')
+    parser.add_argument('--eval', action='store_true')
+    parser.add_argument('--load', type=str, default="")
+    parser.add_argument('--learningRate', type=float, default=2e-4)
+    parser.add_argument('--pathCheckpoint', type=str, default='checkpoint.pt')
+    parser.add_argument('--sizeWindow', type=int, default=20480)
+    parser.add_argument('--nEpoch', type=int, default=10)
+
+    args = parser.parse_args()
+
+    audioData = AudioBatchData(args.pathDB)
+    cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar)
+
+    if args.load !="":
+        print("Loading checkpoint " + args.load)
+        state_dict = torch.load(args.load)
+        cpcModel.load_state_dict(state_dict["gEncoder"])
+
+    baseDataset = AudioBatchDataset(audioData, args.sizeWindow)
+    sizeDataset = len(baseDataset)
+    sizeTrain = int(0.8 * sizeDataset)
+
+    indices = torch.randperm(sizeDataset)
+    trainDataset = Subset(baseDataset, indices[:sizeTrain])
+    valDataset = Subset(baseDataset, indices[sizeTrain:])
+
+    batchSize = 8 * args.nGtSequence
+
+    if args.supervised:
+        cpcCriterion = SpeakerCriterion(args.hiddenGar, audioData.getNSpeakers(), 8)
+        indices = torch.randperm(sizeDataset)
+
+    else:
+        cpcCriterion = CPCUnsupersivedCriterion(args.nPredicts, args.hiddenGar,
+                                                args.hiddenEncoder,
+                                                args.negativeSamplingExt,
+                                                args.nGtSequence)
+
+    optimizeModel = not args.eval
+
+    if args.eval:
+        print("Evaluation mode")
+
+    run(trainDataset,
+        valDataset,
+        cpcModel,
+        cpcCriterion,
+        optimizeModel,
+        args.nEpoch,
+        batchSize,
+        args.learningRate,
+        args.pathCheckpoint)
