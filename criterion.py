@@ -36,15 +36,14 @@ class PredictionNetwork(nn.Module):
             out.append(outK)
         return out
 
-class CPCUnsupersivedCriterion:
+class CPCUnsupersivedCriterion(nn.Module):
 
     def __init__(self,
                  nPredicts,
                  dimOutputAR,
                  dimOutputEncoder,
                  negativeSamplingExt,
-                 nGtSequence,
-                 toGPU = True):
+                 nGtSequence):
 
         super(CPCUnsupersivedCriterion, self).__init__()
         self.wPrediction = PredictionNetwork(nPredicts, dimOutputAR, dimOutputEncoder)
@@ -53,22 +52,6 @@ class CPCUnsupersivedCriterion:
         self.nGtSequence = nGtSequence
 
         self.lossCriterion = nn.CrossEntropyLoss()
-
-        if toGPU:
-            self.wPrediction = nn.DataParallel(self.wPrediction)
-            self.wPrediction.to(torch.device("cuda:0"))
-
-    def eval(self):
-        self.wPrediction.eval()
-
-    def train(self):
-        self.wPrediction.train()
-
-    def state_dict(self):
-        return self.wPrediction.state_dict()
-
-    def parameters(self):
-        return self.wPrediction.parameters()
 
     def sample(self, gtPredictions, encodedData, windowSize):
 
@@ -112,7 +95,7 @@ class CPCUnsupersivedCriterion:
 
         return outputs, labelLoss
 
-    def getPredictions(self, cFeature, gtPredictions, otherEncoded, *args):
+    def forward(self, cFeature, gtPredictions, otherEncoded, *args):
 
         windowSize = gtPredictions.size(0) - self.nPredicts
         cFeature = cFeature[:windowSize]
@@ -131,32 +114,18 @@ class CPCUnsupersivedCriterion:
 
         return torch.cat(outLosses, dim=0), torch.cat(outAcc, dim=0)
 
-class SpeakerCriterion:
+class SpeakerCriterion(nn.Module):
 
-    def __init__(self, dimEncoder, nSpeakers, nSample, toGPU=True):
+    def __init__(self, dimEncoder, nSpeakers, nSample):
+
+        super(SpeakerCriterion, self).__init__()
 
         self.linearSpeakerClassifier = nn.Linear(dimEncoder * nSample, nSpeakers)
         self.lossCriterion = nn.CrossEntropyLoss()
         self.nGtSequence = -1
         self.nSample = nSample
 
-        if toGPU:
-            self.linearSpeakerClassifier = nn.DataParallel(self.linearSpeakerClassifier)
-            self.linearSpeakerClassifier.cuda()
-
-    def train(self):
-        self.linearSpeakerClassifier.train()
-
-    def eval(self):
-        self.linearSpeakerClassifier.eval()
-
-    def state_dict(self):
-        return self.linearSpeakerClassifier.state_dict()
-
-    def parameters(self):
-        return self.linearSpeakerClassifier.parameters()
-
-    def getPredictions(self, cFeature, gtPredictions, otherEncoded, label):
+    def foward(self, cFeature, gtPredictions, otherEncoded, label):
 
         nWindow = cFeature.size(0)
         nSplits = int(nWindow / self.nSample)
