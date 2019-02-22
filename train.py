@@ -1,6 +1,4 @@
-import os
 import torch
-import torch.nn as nn
 from torch.utils.data import Subset
 
 from dataset import AudioBatchData, AudioBatchDataset
@@ -8,18 +6,10 @@ from model import CPCModel
 from criterion import CPCUnsupersivedCriterion, SpeakerCriterion
 
 import numpy as np
-
-import math
-import random
 import argparse
-import sys
 
 import visdom
 vis = visdom.Visdom()
-
-###########################################
-# Main
-###########################################
 
 
 def updateAndShowLogs(text, logs, nPredicts):
@@ -61,7 +51,8 @@ def publishLogs(data, name="", window_tokens=None, env="main"):
                            for x in range(nItems) if plot[x] is not None])
 
         opts = {'title': name + " " + key,
-                'legend': [str(x) for x in range(len(plot[0]))], 'xlabel': 'epoch', 'ylabel': 'loss'}
+                'legend': [str(x) for x in range(len(plot[0]))],
+                'xlabel': 'epoch', 'ylabel': 'loss'}
 
         window_tokens[key] = vis.line(X=inputX, Y=inputY, opts=opts,
                                       win=window_tokens[key], env=env)
@@ -183,11 +174,6 @@ def run(trainDataset,
     logs = {"epoch": []}
     windowToken = None
 
-    # Train / val split : by speakers
-    nSpeakers = audioData.getNSpeakers()
-    speakerTrain = int(0.8 * nSpeakers)
-    baseOffsetTrain = audioData.getSpeakerOffset(speakerTrain)
-
     for epoch in range(nEpoch):
 
         print("Starting epoch %d" % epoch)
@@ -205,8 +191,9 @@ def run(trainDataset,
 
         valLoader = torch.utils.data.DataLoader(valDataset,
                                                 batch_size=batchSize,
-                                                shuffle=True,
+                                                shuffle=False,
                                                 num_workers=2)
+
         locLogsVal = valStep(valLoader, cpcModel, cpcCriterion)
 
         for key, value in dict(locLogsTrain, **locLogsVal).items():
@@ -219,27 +206,28 @@ def run(trainDataset,
             logs, name="CPC validation", window_tokens=windowToken)
 
         # Dirty checkpoint save
-        stateDict = {"gEncoder": cpcModel.state_dict(),
-                     "cpcCriterion": cpcCriterion.state_dict()}
+        if pathCheckpoint is not None:
+            stateDict = {"gEncoder": cpcModel.state_dict(),
+                         "cpcCriterion": cpcCriterion.state_dict()}
 
-        torch.save(stateDict, pathCheckpoint)
+            torch.save(stateDict, pathCheckpoint + "_" + str(epoch)+'.pt')
 
 
 if __name__ == "__main__":
 
     # Run parameters
     parser = argparse.ArgumentParser(description='Trainer')
-    parser.add_argument('--pathDB', type=str, default="")
+    parser.add_argument('--pathDB', type=str, default="/private/home/mriviere/LibriSpeech/train-clean-100/")
     parser.add_argument('--hiddenEncoder', type=int, default=512)
     parser.add_argument('--hiddenGar', type=int, default=256)
-    parser.add_argument('--nPredicts', type=int, default=4)
+    parser.add_argument('--nPredicts', type=int, default=12)
     parser.add_argument('--negativeSamplingExt', type=int, default=128)
     parser.add_argument('--nGtSequence', type=int, default=1)
     parser.add_argument('--supervised', action='store_true')
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--load', type=str, default="")
     parser.add_argument('--learningRate', type=float, default=2e-4)
-    parser.add_argument('--pathCheckpoint', type=str, default='checkpoint.pt')
+    parser.add_argument('--pathCheckpoint', type=str, default=None)
     parser.add_argument('--sizeWindow', type=int, default=20480)
     parser.add_argument('--nEpoch', type=int, default=10)
 
@@ -278,6 +266,7 @@ if __name__ == "__main__":
 
     if args.eval:
         print("Evaluation mode")
+        args.pathCheckpoint = None
 
     run(trainDataset,
         valDataset,
