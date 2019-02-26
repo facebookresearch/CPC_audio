@@ -217,7 +217,9 @@ if __name__ == "__main__":
 
     # Run parameters
     parser = argparse.ArgumentParser(description='Trainer')
-    parser.add_argument('--pathDB', type=str, default="/private/home/mriviere/LibriSpeech/train-clean-100/")
+    parser.add_argument('--pathDB', type=str, default="/datasets01/LibriSpeech/022219/train-clean-100/")
+    parser.add_argument('--pathTrain', type=str, default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/train_split.txt")
+    parser.add_argument('--pathVal', type=str, default=None)
     parser.add_argument('--hiddenEncoder', type=int, default=512)
     parser.add_argument('--hiddenGar', type=int, default=256)
     parser.add_argument('--nPredicts', type=int, default=12)
@@ -233,27 +235,32 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    audioData = AudioBatchData(args.pathDB)
-    cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar)
+    audioData = AudioBatchData(args.pathDB, seqNamesPath=args.pathTrain)
 
+    if args.pathVal is None:
+        baseDataset = AudioBatchDataset(audioData, args.sizeWindow)
+        sizeDataset = len(baseDataset)
+        sizeTrain = int(0.8 * sizeDataset)
+
+        indices = torch.randperm(sizeDataset)
+        trainDataset = Subset(baseDataset, indices[:sizeTrain])
+        valDataset = Subset(baseDataset, indices[sizeTrain:])
+    else:
+        trainDataset = AudioBatchDataset(audioData, args.sizeWindow)
+        valData = AudioBatchData(args.pathDB, seqNamesPath=args.pathVal)
+        valDataset = AudioBatchDataset(valData, args.sizeWindow)
+
+    batchSize = 8 * args.nGtSequence
+
+    cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar)
     if args.load != "":
         print("Loading checkpoint " + args.load)
         state_dict = torch.load(args.load)
         cpcModel.load_state_dict(state_dict["gEncoder"])
 
-    baseDataset = AudioBatchDataset(audioData, args.sizeWindow)
-    sizeDataset = len(baseDataset)
-    sizeTrain = int(0.8 * sizeDataset)
-
-    indices = torch.randperm(sizeDataset)
-    trainDataset = Subset(baseDataset, indices[:sizeTrain])
-    valDataset = Subset(baseDataset, indices[sizeTrain:])
-
-    batchSize = 8 * args.nGtSequence
-
     if args.supervised:
         cpcCriterion = SpeakerCriterion(
-            args.hiddenGar, audioData.getNSpeakers(), 8)
+            args.hiddenGar, audioData.getNSpeakers(), 1)
         indices = torch.randperm(sizeDataset)
 
     else:
