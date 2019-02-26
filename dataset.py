@@ -3,61 +3,86 @@ import torch
 from torch.utils.data import Dataset
 
 import torchaudio
-import math
 
 
 class AudioBatchData:
 
     # Work on this and on the sampler
     def __init__(self,
-                 path):
+                 path,
+                 seqNamesPath=None):
+        """
+        Args:
+            path (string): path to the training dataset
+            seqNamesPath (string): path to a file listing the sequences to load
+        """
 
         self.dbPath = path
-        self.loadAll()
 
-    def loadAll(self):
+        seqNames = None
+        if seqNamesPath is not None:
+            seqNames = [p.replace('\n', '') + ".flac" for p in
+                        open(seqNamesPath, 'r').readlines()]
+        else:
+            seqNames = self.findAllSeqs()
+
+        self.loadAll(seqNames)
+
+    def findAllSeqs(self):
+
+        speakers = [f for f in os.listdir(self.dbPath)
+                    if os.path.isdir(os.path.join(self.dbPath, f))]
+
+        outSeqs = []
+        for speaker in speakers:
+            refPath = os.path.join(self.dbPath, speaker)
+            chapters = os.listdir(refPath)
+            for chapter in chapters:
+                fullPath = os.path.join(refPath, chapter)
+                outSeqs += [f for f in os.listdir(fullPath)
+                            if os.path.splitext(f)[1] == '.flac']
+
+        return outSeqs
+
+    def parseSeqName(name):
+        speaker, chapter, id = name.split('-')
+        return speaker, chapter, id
+
+    def loadAll(self, seqNames):
 
         # Speakers
-        self.speakers = [f for f in os.listdir(self.dbPath)
-                         if os.path.isdir(os.path.join(self.dbPath, f))]
+        self.speakers = []
 
         # Labels
-        self.speakerLabel = [0]
+        self.speakerLabel = []
         self.seqLabel = [0]
+        speakerSize = 0
 
         # Data
         self.data = []
 
-        itemIndex = 0
-        seqIndex = 0
-        speakerIndex = 0
+        # To accelerate the process a bit
+        seqNames.sort()
 
-        for indexSpeaker, speaker in enumerate(self.speakers):
-            refPath = os.path.join(self.dbPath, speaker)
-            chapters = [f for f in os.listdir(refPath)
-                        if os.path.isdir(os.path.join(refPath, f))]
+        for seq in seqNames:
+            speaker, chapter, id = \
+                AudioBatchData.parseSeqName(os.path.splitext(seq)[0])
 
-            for chapter in chapters:
-                chapterPath = os.path.join(refPath, chapter)
-                # Debugging only
+            if len(self.speakers) == 0 or self.speakers[-1] != speaker:
+                self.speakers.append(speaker)
+                self.speakerLabel.append(speakerSize)
 
-                for seqName in os.listdir(chapterPath):
-                    if os.path.splitext(seqName)[1] != '.flac':
-                        continue
+            fullPath = os.path.join(self.dbPath,
+                                    os.path.join(speaker,
+                                                 os.path.join(chapter, seq)))
 
-                    seqPath = os.path.join(chapterPath, seqName)
-                    seq = torchaudio.load(seqPath)[0].view(-1)
+            seq = torchaudio.load(fullPath)[0].view(-1)
+            sizeSeq = seq.size(0)
+            self.data.append(seq)
+            self.seqLabel.append(self.seqLabel[-1] + sizeSeq)
+            speakerSize += sizeSeq
 
-                    sizeSeq = seq.size(0)
-                    seqIndex += sizeSeq
-                    speakerIndex += sizeSeq
-
-                    self.data.append(seq)
-                    self.seqLabel.append(seqIndex)
-                    itemIndex += 1
-
-            self.speakerLabel.append(speakerIndex)
-
+        self.speakerLabel.append(speakerSize)
         self.data = torch.cat(self.data, dim=0)
 
     def getLabel(self, idx):
@@ -96,7 +121,7 @@ class AudioBatchDataset(Dataset):
 
     def __len__(self):
 
-        return int(math.floor((self.maxOffset - self.offset) / self.sizeWindow))
+        return (self.maxOffset - self.offset) // self.sizeWindow
 
     def __getitem__(self, idx):
 
@@ -104,11 +129,5 @@ class AudioBatchDataset(Dataset):
         speakerLabel = torch.tensor(
             self.batchData.getLabel(windowOffset), dtype=torch.long)
 
-        return self.batchData.data[windowOffset:(self.sizeWindow + windowOffset)].view(1, -1), speakerLabel
-
-# On doit pouvoir sampler
-# par fichier audio, par speaker, et uniform
-# faire les UTs
-
-# Pipeline
-# pre-training puis downstream task
+        return self.batchData.data[windowOffset:(self.sizeWindow
+                                   + windowOffset)].view(1, -1), speakerLabel
