@@ -117,8 +117,6 @@ class AudioBatchDataset(Dataset):
         if self.maxOffset <= 0:
             self.maxOffset = len(self.batchData)
 
-        print(self.maxOffset)
-
     def __len__(self):
 
         return (self.maxOffset - self.offset) // self.sizeWindow
