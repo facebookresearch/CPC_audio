@@ -5,6 +5,7 @@ from dataset import AudioBatchData, AudioBatchDataset
 from model import CPCModel
 from criterion import CPCUnsupersivedCriterion, SpeakerCriterion
 
+import json
 import numpy as np
 import argparse
 
@@ -58,6 +59,11 @@ def publishLogs(data, name="", window_tokens=None, env="main"):
                                       win=window_tokens[key], env=env)
 
     return window_tokens
+
+def saveLogs(data, pathLogs):
+
+    with open(pathLogs, 'w') as file:
+        json.dump(data, file, indent=2)
 
 
 def trainStep(dataLoader,
@@ -211,6 +217,7 @@ def run(trainDataset,
                          "cpcCriterion": cpcCriterion.state_dict()}
 
             torch.save(stateDict, pathCheckpoint + "_" + str(epoch)+'.pt')
+            saveLogs(logs, pathCheckpoint + "_logs.json")
 
 
 if __name__ == "__main__":
@@ -261,7 +268,6 @@ if __name__ == "__main__":
     if args.supervised:
         cpcCriterion = SpeakerCriterion(
             args.hiddenGar, audioData.getNSpeakers(), 1)
-        indices = torch.randperm(sizeDataset)
 
     else:
         cpcCriterion = CPCUnsupersivedCriterion(args.nPredicts, args.hiddenGar,
