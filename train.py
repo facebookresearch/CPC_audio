@@ -213,6 +213,8 @@ def run(trainDataset,
         for key, value in dict(locLogsTrain, **locLogsVal).items():
             if key not in logs:
                 logs[key] = [None for x in range(epoch)]
+            if isinstance(value, np.ndarray):
+                value = value.tolist()
             logs[key].append(value)
 
         logs["epoch"].append(epoch)
