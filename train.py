@@ -66,13 +66,34 @@ def saveLogs(data, pathLogs):
         json.dump(data, file, indent=2)
 
 
+def makeOptimizer(optimizer_name, g_params, lr, **kwargs):
+    if optimizer_name == 'adam':
+        from torch.optim import Adam
+        return Adam(g_params, lr=lr, **kwargs)
+    else:
+        raise ValueError('{} is not a supported optimizer'
+                         .format(optimizer_name))
+
+
+def makeScheduler(scheduler_name, optimizer, **kwargs):
+    if scheduler_name == 'step_lr':
+        from torch.optim.lr_scheduler import StepLR
+        return StepLR(optimizer, step_size=1, **kwargs)
+    else:
+        raise ValueError('{} is not a supported scheduler'
+                         .format(scheduler_name))
+
+
 def trainStep(dataLoader,
               model,
               cpcCriterion,
-              optimizer):
+              optimizer,
+              scheduler):
 
     model.train()
     cpcCriterion.train()
+    if scheduler:
+        scheduler.step()
 
     logs = {"step": 0}
 
@@ -154,24 +175,11 @@ def run(trainDataset,
         valDataset,
         cpcModel,
         cpcCriterion,
-        optimizeModel,
         nEpoch,
         batchSize,
-        learningRate,
-        pathCheckpoint):
-
-    cpcCriterion.cuda()
-    cpcModel.cuda()
-
-    # Optimizer
-    g_params = list(cpcCriterion.parameters())
-
-    if optimizeModel:
-        print("Optimizing model")
-        g_params += list(cpcModel.parameters())
-
-    # Nombre magique
-    optimizer = torch.optim.Adam(g_params, lr=learningRate)
+        pathCheckpoint,
+        optimizer,
+        scheduler):
 
     print("Dataset size: %d bits, running %d epochs" %
           (len(audioData), nEpoch))
@@ -193,7 +201,7 @@ def run(trainDataset,
                                                   num_workers=2)
 
         locLogsTrain = trainStep(
-            trainLoader, cpcModel, cpcCriterion, optimizer)
+            trainLoader, cpcModel, cpcCriterion, optimizer, scheduler)
 
         valLoader = torch.utils.data.DataLoader(valDataset,
                                                 batch_size=batchSize,
@@ -239,6 +247,8 @@ if __name__ == "__main__":
     parser.add_argument('--pathCheckpoint', type=str, default=None)
     parser.add_argument('--sizeWindow', type=int, default=20480)
     parser.add_argument('--nEpoch', type=int, default=10)
+    parser.add_argument('--optimizerName', type=str, default='adam', choices=['adam'])
+    parser.add_argument('--schedulerName', type=str, default=None, choices=[None, 'step_lr'])
 
     args = parser.parse_args()
 
@@ -281,12 +291,30 @@ if __name__ == "__main__":
         print("Evaluation mode")
         args.pathCheckpoint = None
 
+    cpcCriterion.cuda()
+    cpcModel.cuda()
+
+    # Optimizer
+    g_params = list(cpcCriterion.parameters())
+
+    if optimizeModel:
+        print("Optimizing model")
+        g_params += list(cpcModel.parameters())
+
+    # Nombre magique
+    optimizer = makeOptimizer(args.optimizerName, g_params, lr=args.learningRate)
+
+    if args.schedulerName:
+        scheduler = makeScheduler(args.schedulerName, optimizer)
+    else:
+        scheduler = None
+
     run(trainDataset,
         valDataset,
         cpcModel,
         cpcCriterion,
-        optimizeModel,
         args.nEpoch,
         batchSize,
-        args.learningRate,
-        args.pathCheckpoint)
+        args.pathCheckpoint,
+        optimizer,
+        scheduler)
