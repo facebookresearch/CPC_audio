@@ -1,4 +1,5 @@
 import torch
+from torch import nn
 from torch.utils.data import Subset
 
 from dataset import AudioBatchData, AudioBatchDataset
@@ -12,9 +13,11 @@ import argparse
 import visdom
 vis = visdom.Visdom()
 
+N_GT_SEQUENCE_BY_GPU = 1
+BATCH_SIZE_BY_GPU = 8
+
 
 def updateAndShowLogs(text, logs, nPredicts):
-
     logStep = logs["step"]
 
     print("")
@@ -37,7 +40,6 @@ def updateAndShowLogs(text, logs, nPredicts):
 
 
 def publishLogs(data, name="", window_tokens=None, env="main"):
-
     if window_tokens is None:
         window_tokens = {key: None for key in data}
 
@@ -59,6 +61,7 @@ def publishLogs(data, name="", window_tokens=None, env="main"):
                                       win=window_tokens[key], env=env)
 
     return window_tokens
+
 
 def saveLogs(data, pathLogs):
 
@@ -88,8 +91,8 @@ def trainStep(dataLoader,
               model,
               cpcCriterion,
               optimizer,
-              scheduler):
-
+              scheduler,
+              nGtSequenceByGPU):
     model.train()
     cpcCriterion.train()
     if scheduler:
@@ -108,8 +111,7 @@ def trainStep(dataLoader,
 
         batchData = batchData.cuda()
         label = label.cuda()
-        cFeature, gtPredictions, otherEncoded = model(batchData,
-                                                      nAR=cpcCriterion.nGtSequence)
+        cFeature, gtPredictions, otherEncoded = model(batchData, nAR=nGtSequenceByGPU)
 
         allLosses, allAcc = cpcCriterion(
             cFeature, gtPredictions, otherEncoded, label)
@@ -133,8 +135,8 @@ def trainStep(dataLoader,
 
 def valStep(dataLoader,
             model,
-            cpcCriterion):
-
+            cpcCriterion,
+            nGtSequenceByGPU):
     model.eval()
     cpcCriterion.eval()
 
@@ -149,7 +151,7 @@ def valStep(dataLoader,
         batchData = batchData.cuda()
         label = label.cuda()
         cFeature, gtPredictions, otherEncoded = model(batchData,
-                                                      nAR=cpcCriterion.nGtSequence)
+                                                      nAR=nGtSequenceByGPU)
 
         if otherEncoded.size() == 0:
             print(batchData.size())
@@ -179,8 +181,8 @@ def run(trainDataset,
         batchSize,
         pathCheckpoint,
         optimizer,
-        scheduler):
-
+        scheduler,
+        nGtSequenceByGPU):
     print("Dataset size: %d bits, running %d epochs" %
           (len(audioData), nEpoch))
 
@@ -201,14 +203,15 @@ def run(trainDataset,
                                                   num_workers=2)
 
         locLogsTrain = trainStep(
-            trainLoader, cpcModel, cpcCriterion, optimizer, scheduler)
+            trainLoader, cpcModel, cpcCriterion, optimizer, scheduler,
+            nGtSequenceByGPU)
 
         valLoader = torch.utils.data.DataLoader(valDataset,
                                                 batch_size=batchSize,
                                                 shuffle=False,
                                                 num_workers=2)
 
-        locLogsVal = valStep(valLoader, cpcModel, cpcCriterion)
+        locLogsVal = valStep(valLoader, cpcModel, cpcCriterion, nGtSequenceByGPU)
 
         for key, value in dict(locLogsTrain, **locLogsVal).items():
             if key not in logs:
@@ -226,7 +229,7 @@ def run(trainDataset,
             stateDict = {"gEncoder": cpcModel.state_dict(),
                          "cpcCriterion": cpcCriterion.state_dict()}
 
-            torch.save(stateDict, pathCheckpoint + "_" + str(epoch)+'.pt')
+            torch.save(stateDict, pathCheckpoint + "_" + str(epoch) + '.pt')
             saveLogs(logs, pathCheckpoint + "_logs.json")
 
 
@@ -241,7 +244,6 @@ if __name__ == "__main__":
     parser.add_argument('--hiddenGar', type=int, default=256)
     parser.add_argument('--nPredicts', type=int, default=12)
     parser.add_argument('--negativeSamplingExt', type=int, default=128)
-    parser.add_argument('--nGtSequence', type=int, default=1)
     parser.add_argument('--supervised', action='store_true')
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--load', type=str, default="")
@@ -251,6 +253,7 @@ if __name__ == "__main__":
     parser.add_argument('--nEpoch', type=int, default=10)
     parser.add_argument('--optimizerName', type=str, default='adam', choices=['adam'])
     parser.add_argument('--schedulerName', type=str, default=None, choices=[None, 'step_lr'])
+    parser.add_argument('--nGPU', type=int, default=1)
 
     args = parser.parse_args()
 
@@ -269,9 +272,21 @@ if __name__ == "__main__":
         valData = AudioBatchData(args.pathDB, seqNamesPath=args.pathVal)
         valDataset = AudioBatchDataset(valData, args.sizeWindow)
 
-    batchSize = 8 * args.nGtSequence
+    nGPU = torch.cuda.device_count() if args.nGPU == -1 else args.nGPU
+    assert nGPU <= torch.cuda.device_count(), f"number of GPU asked: {nGPU}," \
+        f"number GPU detected: {torch.cuda.device_count()}"
+
+    batchSize = nGPU * BATCH_SIZE_BY_GPU
+    nGtSequenceByGPU = -1 if args.supervised else N_GT_SEQUENCE_BY_GPU
+    nGtSequence = nGPU * nGtSequenceByGPU
 
     cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar)
+    if nGPU > 1:
+        print("Let's use", nGPU, "GPUs!")
+        cpcModel = nn.DataParallel(cpcModel, device_ids=range(nGPU))
+    else:
+        print("Let's use", nGPU, "GPU!")
+
     if args.load != "":
         print("Loading checkpoint " + args.load)
         state_dict = torch.load(args.load)
@@ -285,7 +300,7 @@ if __name__ == "__main__":
         cpcCriterion = CPCUnsupersivedCriterion(args.nPredicts, args.hiddenGar,
                                                 args.hiddenEncoder,
                                                 args.negativeSamplingExt,
-                                                args.nGtSequence)
+                                                nGtSequence)
 
     optimizeModel = not args.eval
 
@@ -319,4 +334,5 @@ if __name__ == "__main__":
         batchSize,
         args.pathCheckpoint,
         optimizer,
-        scheduler)
+        scheduler,
+        nGtSequenceByGPU)
