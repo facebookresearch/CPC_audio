@@ -1,16 +1,18 @@
 import os
 import torch
 from torch.utils.data import Dataset
+from torch.utils.data.sampler import Sampler
 
 import torchaudio
 
 
-class AudioBatchData:
+class AudioBatchData(Dataset):
 
     # Work on this and on the sampler
     def __init__(self,
                  path,
-                 seqNamesPath=None):
+                 sizeWindow,
+                 seqNames):
         """
         Args:
             path (string): path to the training dataset
@@ -18,31 +20,8 @@ class AudioBatchData:
         """
 
         self.dbPath = path
-
-        seqNames = None
-        if seqNamesPath is not None:
-            seqNames = [p.replace('\n', '') + ".flac" for p in
-                        open(seqNamesPath, 'r').readlines()]
-        else:
-            seqNames = self.findAllSeqs()
-
+        self.sizeWindow = sizeWindow
         self.loadAll(seqNames)
-
-    def findAllSeqs(self):
-
-        speakers = [f for f in os.listdir(self.dbPath)
-                    if os.path.isdir(os.path.join(self.dbPath, f))]
-
-        outSeqs = []
-        for speaker in speakers:
-            refPath = os.path.join(self.dbPath, speaker)
-            chapters = os.listdir(refPath)
-            for chapter in chapters:
-                fullPath = os.path.join(refPath, chapter)
-                outSeqs += [f for f in os.listdir(fullPath)
-                            if os.path.splitext(f)[1] == '.flac']
-
-        return outSeqs
 
     def parseSeqName(name):
         speaker, chapter, id = name.split('-')
@@ -92,7 +71,15 @@ class AudioBatchData:
         return idSpeaker
 
     def __len__(self):
-        return len(self.data)
+        return len(self.data) // self.sizeWindow
+
+    def __getitem__(self, idx):
+
+        speakerLabel = torch.tensor(
+            self.getLabel(idx), dtype=torch.long)
+
+        return self.data[idx:(self.sizeWindow
+                         + idx)].view(1, -1), speakerLabel
 
     def getNSpeakers(self):
         return len(self.speakers)
@@ -100,32 +87,57 @@ class AudioBatchData:
     def getSpeakerOffset(self, x):
         return self.speakerLabel[x]
 
+    def getSpeakerMaxSize(self, idx):
+        return (self.speakerLabel[idx+1] - self.speakerLabel[idx]) \
+                    // self.sizeWindow
 
-class AudioBatchDataset(Dataset):
+    def getSampler(self, batchSize, groupSize):
+        return AudioBatchSampler(batchSize, groupSize,
+                                 self.speakerLabel, self.sizeWindow)
+
+class AudioBatchSampler(Sampler):
 
     def __init__(self,
-                 batchData,
-                 sizeWindow,
-                 offset=0,
-                 maxOffset=-1):
+                 batchSize,
+                 groupSize,
+                 samplingIntervals,
+                 sizeWindow):
 
-        self.batchData = batchData
-        self.offset = offset
+        self.samplingIntervals = samplingIntervals
         self.sizeWindow = sizeWindow
-        self.maxOffset = maxOffset
 
-        if self.maxOffset <= 0:
-            self.maxOffset = len(self.batchData)
+        if self.samplingIntervals[0] != 0:
+            raise AttributeError("Sampling intervals should start at zero")
+
+        nWindows = len(self.samplingIntervals) -1
+        self.sizeSamplers = [(self.samplingIntervals[i+1] -
+                             self.samplingIntervals[i]) // self.sizeWindow
+                             for i in range(nWindows)]
+        self.samplers = [torch.randperm(s) for s in self.sizeSamplers]
+        self.batchSize = batchSize
+        self.groupSize = groupSize
+
+    def __iter__(self):
+        batch = []
+        order = [[x, i] for i, x in enumerate(self.sizeSamplers)]
+        order.sort(reverse = True)
+        for idx in range(sum(self.sizeSamplers)):
+            shift = min(self.groupSize, order[0][0])
+            shift = min(shift, self.batchSize - len(batch))
+            indexSampler, nInterval = order[0]
+            for p in range(shift):
+                itemIndexInInterval = self.samplers[nInterval][
+                             self.sizeSamplers[nInterval]-indexSampler].item()
+                batch.append(self.getIndex(itemIndexInInterval, nInterval))
+                indexSampler += 1
+            order[0][0] -= shift
+            order.sort(reverse=True)
+            if len(batch) == self.batchSize:
+                yield batch
+                batch = []
+
+    def getIndex(self, x, iInterval):
+        return x * self.sizeWindow + self.samplingIntervals[iInterval]
 
     def __len__(self):
-
-        return (self.maxOffset - self.offset) // self.sizeWindow
-
-    def __getitem__(self, idx):
-
-        windowOffset = self.offset + idx * self.sizeWindow
-        speakerLabel = torch.tensor(
-            self.batchData.getLabel(windowOffset), dtype=torch.long)
-
-        return self.batchData.data[windowOffset:(self.sizeWindow
-                                   + windowOffset)].view(1, -1), speakerLabel
+        return sum(self.sizeSamplers) // self.batchSize

@@ -1,7 +1,8 @@
+import os
+from random import shuffle
 import torch
-from torch.utils.data import Subset
 
-from dataset import AudioBatchData, AudioBatchDataset
+from dataset import AudioBatchData
 from model import CPCModel
 from criterion import CPCUnsupersivedCriterion, SpeakerCriterion
 
@@ -60,6 +61,7 @@ def publishLogs(data, name="", window_tokens=None, env="main"):
 
     return window_tokens
 
+
 def saveLogs(data, pathLogs):
 
     with open(pathLogs, 'w') as file:
@@ -82,6 +84,28 @@ def makeScheduler(scheduler_name, optimizer, **kwargs):
     else:
         raise ValueError('{} is not a supported scheduler'
                          .format(scheduler_name))
+
+
+def findAllSeqs(dbPath):
+
+    speakers = [f for f in os.listdir(dbPath)
+                if os.path.isdir(os.path.join(dbPath, f))]
+
+    outSeqs = []
+    for speaker in speakers:
+        refPath = os.path.join(dbPath, speaker)
+        chapters = os.listdir(refPath)
+        for chapter in chapters:
+            fullPath = os.path.join(refPath, chapter)
+            outSeqs += [f for f in os.listdir(fullPath)
+                        if os.path.splitext(f)[1] == '.flac']
+
+    return outSeqs
+
+
+def parseTxtSplit(pathTxt):
+    return [p.replace('\n', '') + ".flac" for p in
+            open(pathTxt, 'r').readlines()]
 
 
 def trainStep(dataLoader,
@@ -181,31 +205,28 @@ def run(trainDataset,
         optimizer,
         scheduler):
 
-    print("Dataset size: %d bits, running %d epochs" %
-          (len(audioData), nEpoch))
+    print("Running %d epochs" % nEpoch)
 
     #  Logs
     logs = {"epoch": []}
     windowToken = None
+    groupSize = 2
 
     for epoch in range(nEpoch):
 
         print("Starting epoch %d" % epoch)
-
         print("Training dataset %d samples, Validation dataset %d samples" %
               (len(trainDataset), len(valDataset)))
 
         trainLoader = torch.utils.data.DataLoader(trainDataset,
-                                                  batch_size=batchSize,
-                                                  shuffle=True,
+                                                  batch_sampler=trainDataset.getSampler(batchSize, groupSize),
                                                   num_workers=2)
 
         locLogsTrain = trainStep(
             trainLoader, cpcModel, cpcCriterion, optimizer, scheduler)
 
         valLoader = torch.utils.data.DataLoader(valDataset,
-                                                batch_size=batchSize,
-                                                shuffle=False,
+                                                batch_sampler=valDataset.getSampler(batchSize, groupSize),
                                                 num_workers=2)
 
         locLogsVal = valStep(valLoader, cpcModel, cpcCriterion)
@@ -254,20 +275,26 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    audioData = AudioBatchData(args.pathDB, seqNamesPath=args.pathTrain)
+    if args.pathTrain is None:
+        seqNames = findAllSeqs(args.pathDB)
+    else:
+        seqNames = parseTxtSplit(args.pathTrain)
 
     if args.pathVal is None:
-        baseDataset = AudioBatchDataset(audioData, args.sizeWindow)
-        sizeDataset = len(baseDataset)
-        sizeTrain = int(0.8 * sizeDataset)
-
-        indices = torch.randperm(sizeDataset)
-        trainDataset = Subset(baseDataset, indices[:sizeTrain])
-        valDataset = Subset(baseDataset, indices[sizeTrain:])
+        shuffle(seqNames)
+        sizeTrain = int(0.8 * len(seqNames))
+        seqTrain, seqVal = seqNames[:sizeTrain], seqNames[sizeTrain:]
     else:
-        trainDataset = AudioBatchDataset(audioData, args.sizeWindow)
-        valData = AudioBatchData(args.pathDB, seqNamesPath=args.pathVal)
-        valDataset = AudioBatchDataset(valData, args.sizeWindow)
+        seqTrain = seqNames
+        seqVal = parseTxtSplit(args.pathVal)
+
+    trainDataset = AudioBatchData(args.pathDB,
+                                  args.sizeWindow,
+                                  seqTrain)
+
+    valDataset = AudioBatchData(args.pathDB,
+                                args.sizeWindow,
+                                seqVal)
 
     batchSize = 8 * args.nGtSequence
 
@@ -279,7 +306,7 @@ if __name__ == "__main__":
 
     if args.supervised:
         cpcCriterion = SpeakerCriterion(
-            args.hiddenGar, audioData.getNSpeakers(), 1)
+            args.hiddenGar, trainDataset.getNSpeakers(), 1)
 
     else:
         cpcCriterion = CPCUnsupersivedCriterion(args.nPredicts, args.hiddenGar,
@@ -291,7 +318,6 @@ if __name__ == "__main__":
 
     if args.eval:
         print("Evaluation mode")
-        args.pathCheckpoint = None
 
     cpcCriterion.cuda()
     cpcModel.cuda()
@@ -304,12 +330,17 @@ if __name__ == "__main__":
         g_params += list(cpcModel.parameters())
 
     # Nombre magique
-    optimizer = makeOptimizer(args.optimizerName, g_params, lr=args.learningRate)
+    optimizer = makeOptimizer(args.optimizerName, g_params,
+                              lr=args.learningRate)
 
     if args.schedulerName:
         scheduler = makeScheduler(args.schedulerName, optimizer)
     else:
         scheduler = None
+
+    if args.pathCheckpoint is not None:
+        with open(args.pathCheckpoint + "_args.json", 'w') as file:
+            json.dump(vars(args), file, indent=2)
 
     run(trainDataset,
         valDataset,
