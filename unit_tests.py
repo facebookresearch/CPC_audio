@@ -23,6 +23,7 @@ class TestSampler(unittest.TestCase):
 
         assert(shift == len(testSampler))
 
+
 class TestDataLoader(unittest.TestCase):
 
     def test_api(self):
@@ -56,12 +57,12 @@ class TestDataLoader(unittest.TestCase):
                 for i in range(batchSize):
                     p = labels[i].item()
                     isValid = isValid and torch.sum(labels == p) >= groupSize \
-                                and torch.sum(labels != p) > 0
+                        and torch.sum(labels != p) > 0
                     nItemLabels[p] += 1
                 if isValid:
-                    nValidBatch+= 1
+                    nValidBatch += 1
 
-                pp+=1
+                pp += 1
 
             # Since the speakers are not evenly represented, we can't reach 100%
             # validity
@@ -74,8 +75,8 @@ class TestDataLoader(unittest.TestCase):
             for index, value in enumerate(nItemLabels):
                 maxSpeakerValue = testData.getSpeakerMaxSize(index)
                 remaining = maxSpeakerValue - value
-                assert(remaining < batchSize and remaining >=0)
-                r+= remaining
+                assert(remaining < batchSize and remaining >= 0)
+                r += remaining
 
             assert(r < batchSize)
 

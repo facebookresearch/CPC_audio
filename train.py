@@ -219,14 +219,16 @@ def run(trainDataset,
               (len(trainDataset), len(valDataset)))
 
         trainLoader = torch.utils.data.DataLoader(trainDataset,
-                                                  batch_sampler=trainDataset.getSampler(batchSize, groupSize),
+                                                  batch_sampler=trainDataset.getSampler(
+                                                      batchSize, groupSize),
                                                   num_workers=2)
 
         locLogsTrain = trainStep(
             trainLoader, cpcModel, cpcCriterion, optimizer, scheduler)
 
         valLoader = torch.utils.data.DataLoader(valDataset,
-                                                batch_sampler=valDataset.getSampler(batchSize, groupSize),
+                                                batch_sampler=valDataset.getSampler(
+                                                    batchSize, groupSize),
                                                 num_workers=2)
 
         locLogsVal = valStep(valLoader, cpcModel, cpcCriterion)
@@ -255,8 +257,10 @@ if __name__ == "__main__":
 
     # Run parameters
     parser = argparse.ArgumentParser(description='Trainer')
-    parser.add_argument('--pathDB', type=str, default="/datasets01/LibriSpeech/022219/train-clean-100/")
-    parser.add_argument('--pathTrain', type=str, default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/train_split.txt")
+    parser.add_argument(
+        '--pathDB', type=str, default="/datasets01/LibriSpeech/022219/train-clean-100/")
+    parser.add_argument('--pathTrain', type=str,
+                        default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/train_split.txt")
     parser.add_argument('--pathVal', type=str, default=None)
     parser.add_argument('--hiddenEncoder', type=int, default=512)
     parser.add_argument('--hiddenGar', type=int, default=256)
@@ -270,8 +274,10 @@ if __name__ == "__main__":
     parser.add_argument('--pathCheckpoint', type=str, default=None)
     parser.add_argument('--sizeWindow', type=int, default=20480)
     parser.add_argument('--nEpoch', type=int, default=10)
-    parser.add_argument('--optimizerName', type=str, default='adam', choices=['adam'])
-    parser.add_argument('--schedulerName', type=str, default=None, choices=[None, 'step_lr'])
+    parser.add_argument('--optimizerName', type=str,
+                        default='adam', choices=['adam'])
+    parser.add_argument('--schedulerName', type=str,
+                        default=None, choices=[None, 'step_lr'])
 
     args = parser.parse_args()
 

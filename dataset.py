@@ -16,7 +16,8 @@ class AudioBatchData(Dataset):
         """
         Args:
             path (string): path to the training dataset
-            seqNamesPath (string): path to a file listing the sequences to load
+            sizeWindow (int): size of the sliding window
+            seqNames (list): sequences to load
         """
 
         self.dbPath = path
@@ -79,7 +80,7 @@ class AudioBatchData(Dataset):
             self.getLabel(idx), dtype=torch.long)
 
         return self.data[idx:(self.sizeWindow
-                         + idx)].view(1, -1), speakerLabel
+                              + idx)].view(1, -1), speakerLabel
 
     def getNSpeakers(self):
         return len(self.speakers)
@@ -89,19 +90,36 @@ class AudioBatchData(Dataset):
 
     def getSpeakerMaxSize(self, idx):
         return (self.speakerLabel[idx+1] - self.speakerLabel[idx]) \
-                    // self.sizeWindow
+            // self.sizeWindow
 
     def getSampler(self, batchSize, groupSize):
         return AudioBatchSampler(batchSize, groupSize,
                                  self.speakerLabel, self.sizeWindow)
 
+
 class AudioBatchSampler(Sampler):
+    r"""
+    A batch sampler producing mini-batch where items can be divided in groups
+    of same label. At each iteration, the sampler will return a vector of
+    indices:
+    [a1, a2, .., ak, b1, ..., bk, ...]
+
+    Where the dataset elements ai share the same label aself.
+
+    Note:
+        - you can have several groups with the same label in the same minibatch
+        (because input labels are not necessary envenly represented)
+        - if batchSize % k != 0 then the last group will have the size
+        batchSize % k
+        - when there is not enough sample in a label to make a group of k
+        elements, all elements are taken
+    """
 
     def __init__(self,
                  batchSize,
-                 groupSize,
-                 samplingIntervals,
-                 sizeWindow):
+                 groupSize,             # k
+                 samplingIntervals,     # ex: AudioBatchData.speakerLabel
+                 sizeWindow):           # see AudioBatchData.sizeWindow
 
         self.samplingIntervals = samplingIntervals
         self.sizeWindow = sizeWindow
@@ -109,9 +127,9 @@ class AudioBatchSampler(Sampler):
         if self.samplingIntervals[0] != 0:
             raise AttributeError("Sampling intervals should start at zero")
 
-        nWindows = len(self.samplingIntervals) -1
+        nWindows = len(self.samplingIntervals) - 1
         self.sizeSamplers = [(self.samplingIntervals[i+1] -
-                             self.samplingIntervals[i]) // self.sizeWindow
+                              self.samplingIntervals[i]) // self.sizeWindow
                              for i in range(nWindows)]
         self.samplers = [torch.randperm(s) for s in self.sizeSamplers]
         self.batchSize = batchSize
@@ -120,14 +138,14 @@ class AudioBatchSampler(Sampler):
     def __iter__(self):
         batch = []
         order = [[x, i] for i, x in enumerate(self.sizeSamplers)]
-        order.sort(reverse = True)
+        order.sort(reverse=True)
         for idx in range(sum(self.sizeSamplers)):
             shift = min(self.groupSize, order[0][0])
             shift = min(shift, self.batchSize - len(batch))
             indexSampler, nInterval = order[0]
             for p in range(shift):
                 itemIndexInInterval = self.samplers[nInterval][
-                             self.sizeSamplers[nInterval]-indexSampler].item()
+                    self.sizeSamplers[nInterval]-indexSampler].item()
                 batch.append(self.getIndex(itemIndexInInterval, nInterval))
                 indexSampler += 1
             order[0][0] -= shift
