@@ -203,14 +203,14 @@ def run(trainDataset,
         batchSize,
         pathCheckpoint,
         optimizer,
-        scheduler):
+        scheduler,
+        groupSize):
 
     print("Running %d epochs" % nEpoch)
 
     #  Logs
     logs = {"epoch": []}
     windowToken = None
-    groupSize = 2
 
     for epoch in range(nEpoch):
 
@@ -278,6 +278,7 @@ if __name__ == "__main__":
                         default='adam', choices=['adam'])
     parser.add_argument('--schedulerName', type=str,
                         default=None, choices=[None, 'step_lr'])
+    parser.add_argument('--groupSize', type=int, default=2)
 
     args = parser.parse_args()
 
@@ -356,4 +357,5 @@ if __name__ == "__main__":
         batchSize,
         args.pathCheckpoint,
         optimizer,
-        scheduler)
+        scheduler,
+        args.groupSize)
