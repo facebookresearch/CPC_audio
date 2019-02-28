@@ -91,7 +91,8 @@ class CPCUnsupersivedCriterion(nn.Module):
             else:
                 posSeq = gtPredictions[:, k:]
 
-            posSeq = posSeq.view(posSeq.size(0), 1, posSeq.size(1), posSeq.size(2))
+            posSeq = posSeq.view(posSeq.size(
+                0), 1, posSeq.size(1), posSeq.size(2))
 
             # Full sequence
             fullSeq = torch.cat((posSeq, negExt), dim=1)

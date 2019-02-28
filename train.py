@@ -111,7 +111,8 @@ def trainStep(dataLoader,
 
         batchData = batchData.cuda()
         label = label.cuda()
-        cFeature, gtPredictions, otherEncoded = model(batchData, nAR=nGtSequenceByGPU)
+        cFeature, gtPredictions, otherEncoded = model(
+            batchData, nAR=nGtSequenceByGPU)
 
         allLosses, allAcc = cpcCriterion(
             cFeature, gtPredictions, otherEncoded, label)
@@ -211,7 +212,8 @@ def run(trainDataset,
                                                 shuffle=False,
                                                 num_workers=2)
 
-        locLogsVal = valStep(valLoader, cpcModel, cpcCriterion, nGtSequenceByGPU)
+        locLogsVal = valStep(valLoader, cpcModel,
+                             cpcCriterion, nGtSequenceByGPU)
 
         for key, value in dict(locLogsTrain, **locLogsVal).items():
             if key not in logs:
@@ -237,8 +239,10 @@ if __name__ == "__main__":
 
     # Run parameters
     parser = argparse.ArgumentParser(description='Trainer')
-    parser.add_argument('--pathDB', type=str, default="/datasets01/LibriSpeech/022219/train-clean-100/")
-    parser.add_argument('--pathTrain', type=str, default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/train_split.txt")
+    parser.add_argument(
+        '--pathDB', type=str, default="/datasets01/LibriSpeech/022219/train-clean-100/")
+    parser.add_argument('--pathTrain', type=str,
+                        default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/train_split.txt")
     parser.add_argument('--pathVal', type=str, default=None)
     parser.add_argument('--hiddenEncoder', type=int, default=512)
     parser.add_argument('--hiddenGar', type=int, default=256)
@@ -251,8 +255,10 @@ if __name__ == "__main__":
     parser.add_argument('--pathCheckpoint', type=str, default=None)
     parser.add_argument('--sizeWindow', type=int, default=20480)
     parser.add_argument('--nEpoch', type=int, default=10)
-    parser.add_argument('--optimizerName', type=str, default='adam', choices=['adam'])
-    parser.add_argument('--schedulerName', type=str, default=None, choices=[None, 'step_lr'])
+    parser.add_argument('--optimizerName', type=str,
+                        default='adam', choices=['adam'])
+    parser.add_argument('--schedulerName', type=str,
+                        default=None, choices=[None, 'step_lr'])
     parser.add_argument('--nGPU', type=int, default=1)
 
     args = parser.parse_args()
@@ -319,7 +325,8 @@ if __name__ == "__main__":
         g_params += list(cpcModel.parameters())
 
     # Nombre magique
-    optimizer = makeOptimizer(args.optimizerName, g_params, lr=args.learningRate)
+    optimizer = makeOptimizer(
+        args.optimizerName, g_params, lr=args.learningRate)
 
     if args.schedulerName:
         scheduler = makeScheduler(args.schedulerName, optimizer)

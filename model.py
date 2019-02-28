@@ -47,7 +47,8 @@ class AutoregressiveNetwork(nn.Module):
 
         super(AutoregressiveNetwork, self).__init__()
 
-        self.baseNet = nn.GRU(dimEncoded, dimOutput, num_layers=1, batch_first=True)
+        self.baseNet = nn.GRU(dimEncoded, dimOutput,
+                              num_layers=1, batch_first=True)
 
     def getDimOutput(self):
         return self.baseNet.hidden_size
