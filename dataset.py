@@ -128,4 +128,4 @@ class AudioBatchDataset(Dataset):
             self.batchData.getLabel(windowOffset), dtype=torch.long)
 
         return self.batchData.data[windowOffset:(self.sizeWindow
-                                   + windowOffset)].view(1, -1), speakerLabel
+                                                 + windowOffset)].view(1, -1), speakerLabel
