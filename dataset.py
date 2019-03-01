@@ -1,7 +1,7 @@
 import os
 import torch
 from torch.utils.data import Dataset
-from torch.utils.data.sampler import Sampler
+from torch.utils.data.sampler import Sampler, BatchSampler
 
 import torchaudio
 
@@ -85,16 +85,37 @@ class AudioBatchData(Dataset):
     def getNSpeakers(self):
         return len(self.speakers)
 
+    def getNSeqs(self):
+        return len(self.seqLabel) - 1
+
     def getSpeakerOffset(self, x):
         return self.speakerLabel[x]
 
-    def getSpeakerMaxSize(self, idx):
-        return (self.speakerLabel[idx+1] - self.speakerLabel[idx]) \
-            // self.sizeWindow
+    def getSampler(self, batchSize, groupSize, type="speaker", strict=False):
+        if type == "speaker":
+            return AudioBatchSampler(batchSize, groupSize,
+                                     self.speakerLabel, self.sizeWindow)
+        if type == "sequence":
+            return AudioBatchSampler(batchSize, groupSize,
+                                     self.seqLabel, self.sizeWindow)
+        sampler = RandomAudioSampler(len(self.data), self.sizeWindow)
+        return BatchSampler(sampler, batchSize, True)
 
-    def getSampler(self, batchSize, groupSize):
-        return AudioBatchSampler(batchSize, groupSize,
-                                 self.speakerLabel, self.sizeWindow)
+
+class RandomAudioSampler(Sampler):
+
+    def __init__(self,
+                 dataSize,
+                 sizeWindow):
+
+        self.len = dataSize // sizeWindow
+        self.sizeWindow = sizeWindow
+
+    def __iter__(self):
+        return iter((self.sizeWindow * torch.randperm(self.len)).tolist())
+
+    def __len__(self):
+        return self.len
 
 
 class AudioBatchSampler(Sampler):
@@ -104,15 +125,16 @@ class AudioBatchSampler(Sampler):
     indices:
     [a1, a2, .., ak, b1, ..., bk, ...]
 
-    Where the dataset elements ai share the same label aself.
+    Where the dataset elements ai share the same label a.
 
     Note:
         - you can have several groups with the same label in the same minibatch
         (because input labels are not necessary envenly represented)
         - if batchSize % k != 0 then the last group will have the size
         batchSize % k
-        - when there is not enough sample in a label to make a group of k
-        elements, all elements are taken
+        - if not @param strict when there is not enough sample in a label to
+        make a group of k elements, all remaining elements in that label are
+        taken
     """
 
     def __init__(self,
@@ -131,28 +153,37 @@ class AudioBatchSampler(Sampler):
         self.sizeSamplers = [(self.samplingIntervals[i+1] -
                               self.samplingIntervals[i]) // self.sizeWindow
                              for i in range(nWindows)]
-        self.samplers = [torch.randperm(s) for s in self.sizeSamplers]
         self.batchSize = batchSize
         self.groupSize = groupSize
 
     def __iter__(self):
-        batch = []
+        batch, w = [], 0
         order = [[x, i] for i, x in enumerate(self.sizeSamplers)]
+        samplers = [torch.randperm(s) for s in self.sizeSamplers]
         order.sort(reverse=True)
         for idx in range(sum(self.sizeSamplers)):
-            shift = min(self.groupSize, order[0][0])
+            shift = min(self.groupSize, order[w][0])
             shift = min(shift, self.batchSize - len(batch))
-            indexSampler, nInterval = order[0]
+            indexSampler, nInterval = order[w]
             for p in range(shift):
-                itemIndexInInterval = self.samplers[nInterval][
+                itemIndexInInterval = samplers[nInterval][
                     self.sizeSamplers[nInterval]-indexSampler].item()
                 batch.append(self.getIndex(itemIndexInInterval, nInterval))
                 indexSampler += 1
-            order[0][0] -= shift
-            order.sort(reverse=True)
+            order[w][0] -= shift
+            if w + 1 < len(order) and order[w+1][0] > 0:
+                w += 1
+            else:
+                order.sort(reverse=True)
+                w = 0
             if len(batch) == self.batchSize:
                 yield batch
                 batch = []
+                order.sort(reverse=True)
+                w = 0
+
+    def getSpeakerMaxSize(self, idx):
+        return self.sizeSamplers[idx]
 
     def getIndex(self, x, iInterval):
         return x * self.sizeWindow + self.samplingIntervals[iInterval]

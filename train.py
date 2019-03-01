@@ -68,24 +68,6 @@ def saveLogs(data, pathLogs):
         json.dump(data, file, indent=2)
 
 
-def makeOptimizer(optimizer_name, g_params, lr, **kwargs):
-    if optimizer_name == 'adam':
-        from torch.optim import Adam
-        return Adam(g_params, lr=lr, **kwargs)
-    else:
-        raise ValueError('{} is not a supported optimizer'
-                         .format(optimizer_name))
-
-
-def makeScheduler(scheduler_name, optimizer, **kwargs):
-    if scheduler_name == 'step_lr':
-        from torch.optim.lr_scheduler import StepLR
-        return StepLR(optimizer, step_size=1, **kwargs)
-    else:
-        raise ValueError('{} is not a supported scheduler'
-                         .format(scheduler_name))
-
-
 def findAllSeqs(dbPath):
 
     speakers = [f for f in os.listdir(dbPath)
@@ -116,7 +98,7 @@ def trainStep(dataLoader,
 
     model.train()
     cpcCriterion.train()
-    if scheduler:
+    if scheduler is not None:
         scheduler.step()
 
     logs = {"step": 0}
@@ -126,10 +108,6 @@ def trainStep(dataLoader,
         optimizer.zero_grad()
 
         batchData, label = fulldata
-
-        if batchData.size(0) <= cpcCriterion.nGtSequence:
-            continue
-
         batchData = batchData.cuda()
         label = label.cuda()
         cFeature, gtPredictions, otherEncoded = model(batchData,
@@ -166,17 +144,10 @@ def valStep(dataLoader,
     for step, fulldata in enumerate(dataLoader):
 
         batchData, label = fulldata
-
-        if batchData.size(0) <= cpcCriterion.nGtSequence:
-            continue
-
         batchData = batchData.cuda()
         label = label.cuda()
         cFeature, gtPredictions, otherEncoded = model(batchData,
                                                       nAR=cpcCriterion.nGtSequence)
-
-        if otherEncoded.size() == 0:
-            print(batchData.size())
 
         allLosses, allAcc = cpcCriterion(
             cFeature, gtPredictions, otherEncoded, label)
@@ -195,16 +166,14 @@ def valStep(dataLoader,
     return logs
 
 
-def run(trainDataset,
-        valDataset,
+def run(trainLoader,
+        valLoader,
         cpcModel,
         cpcCriterion,
         nEpoch,
-        batchSize,
         pathCheckpoint,
         optimizer,
-        scheduler,
-        groupSize):
+        scheduler):
 
     print("Running %d epochs" % nEpoch)
 
@@ -215,21 +184,11 @@ def run(trainDataset,
     for epoch in range(nEpoch):
 
         print("Starting epoch %d" % epoch)
-        print("Training dataset %d samples, Validation dataset %d samples" %
-              (len(trainDataset), len(valDataset)))
-
-        trainLoader = torch.utils.data.DataLoader(trainDataset,
-                                                  batch_sampler=trainDataset.getSampler(
-                                                      batchSize, groupSize),
-                                                  num_workers=2)
+        print("Training dataset %d batches, Validation dataset %d batches" %
+              (len(trainLoader), len(valLoader)))
 
         locLogsTrain = trainStep(
             trainLoader, cpcModel, cpcCriterion, optimizer, scheduler)
-
-        valLoader = torch.utils.data.DataLoader(valDataset,
-                                                batch_sampler=valDataset.getSampler(
-                                                    batchSize, groupSize),
-                                                num_workers=2)
 
         locLogsVal = valStep(valLoader, cpcModel, cpcCriterion)
 
@@ -261,7 +220,8 @@ if __name__ == "__main__":
         '--pathDB', type=str, default="/datasets01/LibriSpeech/022219/train-clean-100/")
     parser.add_argument('--pathTrain', type=str,
                         default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/train_split.txt")
-    parser.add_argument('--pathVal', type=str, default=None)
+    parser.add_argument('--pathVal', type=str,
+                        default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/test_split.txt")
     parser.add_argument('--hiddenEncoder', type=int, default=512)
     parser.add_argument('--hiddenGar', type=int, default=256)
     parser.add_argument('--nPredicts', type=int, default=12)
@@ -274,11 +234,12 @@ if __name__ == "__main__":
     parser.add_argument('--pathCheckpoint', type=str, default=None)
     parser.add_argument('--sizeWindow', type=int, default=20480)
     parser.add_argument('--nEpoch', type=int, default=10)
-    parser.add_argument('--optimizerName', type=str,
-                        default='adam', choices=['adam'])
-    parser.add_argument('--schedulerName', type=str,
-                        default=None, choices=[None, 'step_lr'])
+    parser.add_argument('--schedulerStep', type=int,
+                        default=0)
     parser.add_argument('--groupSize', type=int, default=2)
+    parser.add_argument('--samplingType', type=str, default='speaker',
+                        choices=['speaker', 'uniform', 'sequence'])
+    parser.add_argument('--debug', action='store_true')
 
     args = parser.parse_args()
 
@@ -294,6 +255,10 @@ if __name__ == "__main__":
     else:
         seqTrain = seqNames
         seqVal = parseTxtSplit(args.pathVal)
+
+    if args.debug:
+        seqTrain = seqTrain[:2000]
+        seqVal = seqVal[:2000]
 
     trainDataset = AudioBatchData(args.pathDB,
                                   args.sizeWindow,
@@ -314,7 +279,6 @@ if __name__ == "__main__":
     if args.supervised:
         cpcCriterion = SpeakerCriterion(
             args.hiddenGar, trainDataset.getNSpeakers(), 1)
-
     else:
         cpcCriterion = CPCUnsupersivedCriterion(args.nPredicts, args.hiddenGar,
                                                 args.hiddenEncoder,
@@ -336,26 +300,37 @@ if __name__ == "__main__":
         print("Optimizing model")
         g_params += list(cpcModel.parameters())
 
-    # Nombre magique
-    optimizer = makeOptimizer(args.optimizerName, g_params,
-                              lr=args.learningRate)
+    optimizer = torch.optim.Adam(g_params, lr=args.learningRate)
 
-    if args.schedulerName:
-        scheduler = makeScheduler(args.schedulerName, optimizer)
+    if args.schedulerStep > 0:
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer, step_size=args.schedulerStep)
     else:
         scheduler = None
 
     if args.pathCheckpoint is not None:
+        if not os.path.isdir(args.pathCheckpoint):
+            os.mkdir(args.pathCheckpoint)
+        args.pathCheckpoint = os.path.join(args.pathCheckpoint, "checkpoint")
         with open(args.pathCheckpoint + "_args.json", 'w') as file:
             json.dump(vars(args), file, indent=2)
 
-    run(trainDataset,
-        valDataset,
+    trainLoader = torch.utils.data.DataLoader(trainDataset,
+                                              batch_sampler=trainDataset.getSampler(
+                                                  batchSize, args.groupSize,
+                                                  args.samplingType),
+                                              num_workers=2)
+    valLoader = torch.utils.data.DataLoader(valDataset,
+                                            batch_sampler=valDataset.getSampler(
+                                                batchSize, args.groupSize,
+                                                args.samplingType),
+                                            num_workers=2)
+
+    run(trainLoader,
+        valLoader,
         cpcModel,
         cpcCriterion,
         args.nEpoch,
-        batchSize,
         args.pathCheckpoint,
         optimizer,
-        scheduler,
-        args.groupSize)
+        scheduler)

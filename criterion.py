@@ -3,10 +3,6 @@ import torch.nn as nn
 
 import numpy as np
 
-###############
-# Criterion
-###############
-
 
 class PredictionNetwork(nn.Module):
 
@@ -59,13 +55,10 @@ class CPCUnsupersivedCriterion(nn.Module):
 
     def sample(self, gtPredictions, encodedData, windowSize):
 
-        # Correct the number of negative samples to make sure that the number of
-        # indices to draw is lower than the available number of indices
+        # Correct the number of negative samples to make sure that the number
+        # of indices to draw is lower than the available number of indices
         dimEncoded = encodedData.size(1)
         nNegativeExt = encodedData.size(0)
-
-        if nNegativeExt == 0:
-            print(gtPredictions.size())
 
         negativeSamplingExt = min(self.negativeSamplingExt, nNegativeExt)
 
@@ -137,7 +130,7 @@ class SpeakerCriterion(nn.Module):
     def forward(self, cFeature, gtPredictions, otherEncoded, label):
 
         nWindow = cFeature.size(0)
-        nSplits = int(nWindow / self.nSample)
+        nSplits = nWindow // self.nSample
 
         nSampledLabels = self.nSample * nSplits
 
