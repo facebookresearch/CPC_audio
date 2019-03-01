@@ -1,4 +1,5 @@
 import os
+import random
 import torch
 from torch.utils.data import Dataset
 from torch.utils.data.sampler import Sampler, BatchSampler
@@ -88,17 +89,14 @@ class AudioBatchData(Dataset):
     def getNSeqs(self):
         return len(self.seqLabel) - 1
 
-    def getSpeakerOffset(self, x):
-        return self.speakerLabel[x]
-
-    def getSampler(self, batchSize, groupSize, type="speaker", strict=False):
+    def getSampler(self, batchSize, groupSize, type, offset=False):
         if type == "speaker":
             return AudioBatchSampler(batchSize, groupSize,
-                                     self.speakerLabel, self.sizeWindow)
+                                     self.speakerLabel, self.sizeWindow, offset)
         if type == "sequence":
             return AudioBatchSampler(batchSize, groupSize,
-                                     self.seqLabel, self.sizeWindow)
-        sampler = RandomAudioSampler(len(self.data), self.sizeWindow)
+                                     self.seqLabel, self.sizeWindow, offset)
+        sampler = RandomAudioSampler(len(self.data), self.sizeWindow, offset)
         return BatchSampler(sampler, batchSize, True)
 
 
@@ -106,13 +104,16 @@ class RandomAudioSampler(Sampler):
 
     def __init__(self,
                  dataSize,
-                 sizeWindow):
+                 sizeWindow,
+                 offset):
 
         self.len = dataSize // sizeWindow
         self.sizeWindow = sizeWindow
+        self.offset = offset
 
     def __iter__(self):
-        return iter((self.sizeWindow * torch.randperm(self.len)).tolist())
+        offset = random.randint(0, self.sizeWindow // 2) if self.offset else 0
+        return iter((offset + self.sizeWindow * torch.randperm(self.len)).tolist())
 
     def __len__(self):
         return self.len
@@ -141,7 +142,9 @@ class AudioBatchSampler(Sampler):
                  batchSize,
                  groupSize,             # k
                  samplingIntervals,     # ex: AudioBatchData.speakerLabel
-                 sizeWindow):           # see AudioBatchData.sizeWindow
+                 sizeWindow,            # see AudioBatchData.sizeWindow
+                 offset):               # (bool) random offset ?
+
 
         self.samplingIntervals = samplingIntervals
         self.sizeWindow = sizeWindow
@@ -155,20 +158,24 @@ class AudioBatchSampler(Sampler):
                              for i in range(nWindows)]
         self.batchSize = batchSize
         self.groupSize = groupSize
+        self.offset = offset
+        if offset:
+            self.sizeSamplers = [x - 1 for x in self.sizeSamplers]
 
     def __iter__(self):
         batch, w = [], 0
         order = [[x, i] for i, x in enumerate(self.sizeSamplers)]
         samplers = [torch.randperm(s) for s in self.sizeSamplers]
         order.sort(reverse=True)
+        offset = random.randint(0, self.sizeWindow // 2) if self.offset else 0
         for idx in range(sum(self.sizeSamplers)):
             shift = min(self.groupSize, order[w][0])
             shift = min(shift, self.batchSize - len(batch))
             indexSampler, nInterval = order[w]
             for p in range(shift):
-                itemIndexInInterval = samplers[nInterval][
+                indexInInterval = samplers[nInterval][
                     self.sizeSamplers[nInterval]-indexSampler].item()
-                batch.append(self.getIndex(itemIndexInInterval, nInterval))
+                batch.append(self.getIndex(indexInInterval, nInterval, offset))
                 indexSampler += 1
             order[w][0] -= shift
             if w + 1 < len(order) and order[w+1][0] > 0:
@@ -185,8 +192,8 @@ class AudioBatchSampler(Sampler):
     def getSpeakerMaxSize(self, idx):
         return self.sizeSamplers[idx]
 
-    def getIndex(self, x, iInterval):
-        return x * self.sizeWindow + self.samplingIntervals[iInterval]
+    def getIndex(self, x, iInterval, offset):
+        return  offset + x * self.sizeWindow + self.samplingIntervals[iInterval]
 
     def __len__(self):
         return sum(self.sizeSamplers) // self.batchSize

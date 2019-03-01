@@ -318,12 +318,12 @@ if __name__ == "__main__":
     trainLoader = torch.utils.data.DataLoader(trainDataset,
                                               batch_sampler=trainDataset.getSampler(
                                                   batchSize, args.groupSize,
-                                                  args.samplingType),
+                                                  args.samplingType, True),
                                               num_workers=2)
     valLoader = torch.utils.data.DataLoader(valDataset,
                                             batch_sampler=valDataset.getSampler(
                                                 batchSize, args.groupSize,
-                                                args.samplingType),
+                                                args.samplingType, False),
                                             num_workers=2)
 
     run(trainLoader,

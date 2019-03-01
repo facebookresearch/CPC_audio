@@ -13,7 +13,8 @@ class TestSampler(unittest.TestCase):
         testSampler = AudioBatchSampler(batchSize,
                                         groupSize,
                                         samplingIntervals,
-                                        sizeWindow)
+                                        sizeWindow,
+                                        False)
         shift = 0
         indexes = []
         for item in testSampler:
@@ -21,7 +22,7 @@ class TestSampler(unittest.TestCase):
             indexes += item
             shift += 1
 
-        #assert(shift == len(testSampler))
+        assert(shift == len(testSampler))
 
 
 class TestDataLoader(unittest.TestCase):
@@ -56,10 +57,9 @@ class TestDataLoader(unittest.TestCase):
         # Check the number of speakers
         nSpeaker = testData.getNSpeakers()
 
-        nValidBatch, nAllk = 0, 0
+        nValidBatch = 0
         nItemLabels = [0 for x in range(nSpeaker)]
-        pp = 0
-        testSampler = testData.getSampler(batchSize, groupSize)
+        testSampler = testData.getSampler(batchSize, groupSize, offset=True)
         testDataLoader = torch.utils.data.DataLoader(testData,
                                                      batch_sampler=testSampler,
                                                      num_workers=2)
@@ -67,7 +67,7 @@ class TestDataLoader(unittest.TestCase):
         for index, item in enumerate(testDataLoader):
 
             data, labels = item
-            isValid, allk = True, True
+            isValid = True
             for i in range(batchSize):
                 p = labels[i].item()
                 isValid = isValid and torch.sum(labels == p) >= groupSize \
@@ -75,10 +75,6 @@ class TestDataLoader(unittest.TestCase):
                 nItemLabels[p] += 1
             if isValid:
                 nValidBatch += 1
-            if allk:
-                nAllk += 1
-
-            pp += 1
 
         # Since the speakers are not evenly represented, we can't reach
         # 100% validity
