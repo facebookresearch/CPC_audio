@@ -13,7 +13,6 @@ import argparse
 import visdom
 vis = visdom.Visdom()
 
-N_GT_SEQUENCE_BY_GPU = 1
 BATCH_SIZE_BY_GPU = 8
 
 
@@ -282,7 +281,7 @@ if __name__ == "__main__":
         f"number GPU detected: {torch.cuda.device_count()}"
 
     batchSize = nGPU * BATCH_SIZE_BY_GPU
-    nGtSequence = nGPU * N_GT_SEQUENCE_BY_GPU
+    nGtSequence = nGPU
     print("Let's use", nGPU, "GPUs!")
     cpcModel = torch.nn.DataParallel(cpcModel, device_ids=range(nGPU))
 

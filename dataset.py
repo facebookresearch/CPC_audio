@@ -192,7 +192,7 @@ class AudioBatchSampler(Sampler):
         return self.sizeSamplers[idx]
 
     def getIndex(self, x, iInterval, offset):
-        return  offset + x * self.sizeWindow + self.samplingIntervals[iInterval]
+        return offset + x * self.sizeWindow + self.samplingIntervals[iInterval]
 
     def __len__(self):
         return sum(self.sizeSamplers) // self.batchSize
