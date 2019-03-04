@@ -129,18 +129,10 @@ class SpeakerCriterion(nn.Module):
 
     def forward(self, cFeature, gtPredictions, otherEncoded, label):
 
-        nWindow = cFeature.size(0)
-        nSplits = nWindow // self.nSample
-
-        nSampledLabels = self.nSample * nSplits
-
-        label = label.view(-1, 1).expand(-1, nSplits).contiguous().view(-1)
-
         # cFeature.size() : seq Size x batchSize x hidden size
         batchSize = cFeature.size(1)
-        cFeature = cFeature[:nSampledLabels].permute(1, 0, 2)
-
-        cFeature = cFeature.contiguous().view(nSplits * batchSize, -1)
+        cFeature = cFeature[-1, :, :]
+        cFeature = cFeature.contiguous().view(batchSize, -1)
 
         predictions = self.linearSpeakerClassifier(cFeature)
         loss = self.lossCriterion(predictions, label).view(-1)
