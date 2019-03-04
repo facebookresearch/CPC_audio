@@ -101,16 +101,17 @@ class CPCUnsupersivedCriterion(nn.Module):
 
         predictions = self.wPrediction(cFeature, sampledData)
 
-        outLosses = []
-        outAcc = []
+        outLosses = [0 for x in range(self.nPredicts)]
+        outAcc = [0 for x in range(self.nPredicts)]
+
         for k, locPreds in enumerate(predictions):
             locPreds = locPreds.permute(0, 2, 1)
             for gtSeq in range(self.nGtSequence):
                 lossK = self.lossCriterion(locPreds[gtSeq], labelLoss)
-                outLosses.append(lossK.view(-1))
+                outLosses[k] += lossK.view(-1) / self.nGtSequence
                 _, predsIndex = locPreds[gtSeq].max(1)
-                outAcc.append(torch.sum(predsIndex == 0).double(
-                ).view(-1) / (self.nGtSequence * windowSize))
+                outAcc[k] += torch.sum(predsIndex == 0).double(
+                ).view(-1) / (self.nGtSequence * windowSize)
 
         return torch.cat(outLosses, dim=0), torch.cat(outAcc, dim=0)
 
