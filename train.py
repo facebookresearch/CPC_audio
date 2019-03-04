@@ -13,9 +13,11 @@ import argparse
 import visdom
 vis = visdom.Visdom()
 
+N_GT_SEQUENCE_BY_GPU = 1
+BATCH_SIZE_BY_GPU = 8
+
 
 def updateAndShowLogs(text, logs, nPredicts):
-
     logStep = logs["step"]
 
     print("")
@@ -38,7 +40,6 @@ def updateAndShowLogs(text, logs, nPredicts):
 
 
 def publishLogs(data, name="", window_tokens=None, env="main"):
-
     if window_tokens is None:
         window_tokens = {key: None for key in data}
 
@@ -95,11 +96,12 @@ def trainStep(dataLoader,
               cpcCriterion,
               optimizer,
               scheduler):
-
     model.train()
     cpcCriterion.train()
     if scheduler is not None:
         scheduler.step()
+
+    nGtSequenceByGPU = cpcCriterion.nGtSequence // len(model.device_ids)
 
     logs = {"step": 0}
 
@@ -110,8 +112,8 @@ def trainStep(dataLoader,
         batchData, label = fulldata
         batchData = batchData.cuda()
         label = label.cuda()
-        cFeature, gtPredictions, otherEncoded = model(batchData,
-                                                      nAR=cpcCriterion.nGtSequence)
+        cFeature, gtPredictions, otherEncoded = model(
+            batchData, nAR=nGtSequenceByGPU)
 
         allLosses, allAcc = cpcCriterion(
             cFeature, gtPredictions, otherEncoded, label)
@@ -136,18 +138,18 @@ def trainStep(dataLoader,
 def valStep(dataLoader,
             model,
             cpcCriterion):
-
     model.eval()
     cpcCriterion.eval()
 
     logs = {"step": 0}
+    nGtSequenceByGPU = cpcCriterion.nGtSequence // len(model.device_ids)
     for step, fulldata in enumerate(dataLoader):
 
         batchData, label = fulldata
         batchData = batchData.cuda()
         label = label.cuda()
         cFeature, gtPredictions, otherEncoded = model(batchData,
-                                                      nAR=cpcCriterion.nGtSequence)
+                                                      nAR=nGtSequenceByGPU)
 
         allLosses, allAcc = cpcCriterion(
             cFeature, gtPredictions, otherEncoded, label)
@@ -205,10 +207,10 @@ def run(trainLoader,
 
         # Dirty checkpoint save
         if pathCheckpoint is not None:
-            stateDict = {"gEncoder": cpcModel.state_dict(),
+            stateDict = {"gEncoder": cpcModel.module.state_dict(),
                          "cpcCriterion": cpcCriterion.state_dict()}
 
-            torch.save(stateDict, pathCheckpoint + "_" + str(epoch)+'.pt')
+            torch.save(stateDict, pathCheckpoint + "_" + str(epoch) + '.pt')
             saveLogs(logs, pathCheckpoint + "_logs.json")
 
 
@@ -226,7 +228,6 @@ if __name__ == "__main__":
     parser.add_argument('--hiddenGar', type=int, default=256)
     parser.add_argument('--nPredicts', type=int, default=12)
     parser.add_argument('--negativeSamplingExt', type=int, default=128)
-    parser.add_argument('--nGtSequence', type=int, default=1)
     parser.add_argument('--supervised', action='store_true')
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--load', type=str, default="")
@@ -239,6 +240,7 @@ if __name__ == "__main__":
     parser.add_argument('--groupSize', type=int, default=2)
     parser.add_argument('--samplingType', type=str, default='speaker',
                         choices=['speaker', 'uniform', 'sequence'])
+    parser.add_argument('--nGPU', type=int, default=1)
     parser.add_argument('--debug', action='store_true')
 
     args = parser.parse_args()
@@ -268,13 +270,21 @@ if __name__ == "__main__":
                                 args.sizeWindow,
                                 seqVal)
 
-    batchSize = 8 * args.nGtSequence
-
     cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar)
+
     if args.load != "":
         print("Loading checkpoint " + args.load)
         state_dict = torch.load(args.load)
         cpcModel.load_state_dict(state_dict["gEncoder"])
+
+    nGPU = torch.cuda.device_count() if args.nGPU == -1 else args.nGPU
+    assert nGPU <= torch.cuda.device_count(), f"number of GPU asked: {nGPU}," \
+        f"number GPU detected: {torch.cuda.device_count()}"
+
+    batchSize = nGPU * BATCH_SIZE_BY_GPU
+    nGtSequence = nGPU * N_GT_SEQUENCE_BY_GPU
+    print("Let's use", nGPU, "GPUs!")
+    cpcModel = torch.nn.DataParallel(cpcModel, device_ids=range(nGPU))
 
     if args.supervised:
         cpcCriterion = SpeakerCriterion(
@@ -283,7 +293,7 @@ if __name__ == "__main__":
         cpcCriterion = CPCUnsupersivedCriterion(args.nPredicts, args.hiddenGar,
                                                 args.hiddenEncoder,
                                                 args.negativeSamplingExt,
-                                                args.nGtSequence)
+                                                nGtSequence)
 
     optimizeModel = not args.eval
 

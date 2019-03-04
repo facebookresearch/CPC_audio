@@ -145,7 +145,6 @@ class AudioBatchSampler(Sampler):
                  sizeWindow,            # see AudioBatchData.sizeWindow
                  offset):               # (bool) random offset ?
 
-
         self.samplingIntervals = samplingIntervals
         self.sizeWindow = sizeWindow
 

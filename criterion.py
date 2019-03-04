@@ -70,9 +70,9 @@ class CPCUnsupersivedCriterion(nn.Module):
         extIdx = np.random.randint(0, nNegativeExt,
                                    size=(negativeSamplingExt * windowSize * self.nGtSequence))
 
-        negExt = encodedData[extIdx].view(windowSize,
+        negExt = encodedData[extIdx].view(self.nGtSequence,
                                           negativeSamplingExt,
-                                          self.nGtSequence,
+                                          windowSize,
                                           dimEncoded)
 
         outputs = []
@@ -80,9 +80,9 @@ class CPCUnsupersivedCriterion(nn.Module):
 
             # Positive samples
             if k < self.nPredicts:
-                posSeq = gtPredictions[k:-(self.nPredicts-k)]
+                posSeq = gtPredictions[:, k:-(self.nPredicts-k)]
             else:
-                posSeq = gtPredictions[k:]
+                posSeq = gtPredictions[:, k:]
 
             posSeq = posSeq.view(posSeq.size(
                 0), 1, posSeq.size(1), posSeq.size(2))
@@ -94,9 +94,8 @@ class CPCUnsupersivedCriterion(nn.Module):
         return outputs, labelLoss
 
     def forward(self, cFeature, gtPredictions, otherEncoded, *args):
-
-        windowSize = gtPredictions.size(0) - self.nPredicts
-        cFeature = cFeature[:windowSize]
+        windowSize = gtPredictions.size(1) - self.nPredicts
+        cFeature = cFeature[:, :windowSize]
         sampledData, labelLoss = self.sample(
             gtPredictions, otherEncoded, windowSize)
 
@@ -105,10 +104,11 @@ class CPCUnsupersivedCriterion(nn.Module):
         outLosses = []
         outAcc = []
         for k, locPreds in enumerate(predictions):
+            locPreds = locPreds.permute(0, 2, 1)
             for gtSeq in range(self.nGtSequence):
-                lossK = self.lossCriterion(locPreds[:, :, gtSeq], labelLoss)
+                lossK = self.lossCriterion(locPreds[gtSeq], labelLoss)
                 outLosses.append(lossK.view(-1))
-                _, predsIndex = locPreds[:, :, gtSeq].max(1)
+                _, predsIndex = locPreds[gtSeq].max(1)
                 outAcc.append(torch.sum(predsIndex == 0).double(
                 ).view(-1) / (self.nGtSequence * windowSize))
 
@@ -129,10 +129,10 @@ class SpeakerCriterion(nn.Module):
 
     def forward(self, cFeature, gtPredictions, otherEncoded, label):
 
-        # cFeature.size() : seq Size x batchSize x hidden size
-        batchSize = cFeature.size(1)
-        cFeature = cFeature[-1, :, :]
-        cFeature = cFeature.contiguous().view(batchSize, -1)
+        # cFeature.size() : batchSize x seq Size x hidden size
+        batchSize = cFeature.size(0)
+        cFeature = cFeature[:, -1, :]
+        cFeature = cFeature.view(batchSize, -1)
 
         predictions = self.linearSpeakerClassifier(cFeature)
         loss = self.lossCriterion(predictions, label).view(-1)
