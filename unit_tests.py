@@ -59,7 +59,7 @@ class TestDataLoader(unittest.TestCase):
 
         nValidBatch = 0
         nItemLabels = [0 for x in range(nSpeaker)]
-        testSampler = testData.getSampler(batchSize, groupSize, offset=True)
+        testSampler = testData.getSampler(batchSize, groupSize, "speaker", True)
         testDataLoader = torch.utils.data.DataLoader(testData,
                                                      batch_sampler=testSampler,
                                                      num_workers=2)
