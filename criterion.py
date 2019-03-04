@@ -3,10 +3,6 @@ import torch.nn as nn
 
 import numpy as np
 
-###############
-# Criterion
-###############
-
 
 class PredictionNetwork(nn.Module):
 
@@ -59,13 +55,10 @@ class CPCUnsupersivedCriterion(nn.Module):
 
     def sample(self, gtPredictions, encodedData, windowSize):
 
-        # Correct the number of negative samples to make sure that the number of
-        # indices to draw is lower than the available number of indices
+        # Correct the number of negative samples to make sure that the number
+        # of indices to draw is lower than the available number of indices
         dimEncoded = encodedData.size(1)
         nNegativeExt = encodedData.size(0)
-
-        if nNegativeExt == 0:
-            print(gtPredictions.size())
 
         negativeSamplingExt = min(self.negativeSamplingExt, nNegativeExt)
 
@@ -108,16 +101,17 @@ class CPCUnsupersivedCriterion(nn.Module):
 
         predictions = self.wPrediction(cFeature, sampledData)
 
-        outLosses = []
-        outAcc = []
+        outLosses = [0 for x in range(self.nPredicts)]
+        outAcc = [0 for x in range(self.nPredicts)]
+
         for k, locPreds in enumerate(predictions):
             locPreds = locPreds.permute(0, 2, 1)
             for gtSeq in range(self.nGtSequence):
                 lossK = self.lossCriterion(locPreds[gtSeq], labelLoss)
-                outLosses.append(lossK.view(-1))
+                outLosses[k] += lossK.view(-1) / self.nGtSequence
                 _, predsIndex = locPreds[gtSeq].max(1)
-                outAcc.append(torch.sum(predsIndex == 0).double(
-                ).view(-1) / (self.nGtSequence * windowSize))
+                outAcc[k] += torch.sum(predsIndex == 0).double(
+                ).view(-1) / (self.nGtSequence * windowSize)
 
         return torch.cat(outLosses, dim=0), torch.cat(outAcc, dim=0)
 
@@ -136,18 +130,10 @@ class SpeakerCriterion(nn.Module):
 
     def forward(self, cFeature, gtPredictions, otherEncoded, label):
 
-        nWindow = cFeature.size(1)
-        nSplits = int(nWindow / self.nSample)
-
-        nSampledLabels = self.nSample * nSplits
-
-        label = label.view(-1, 1).expand(-1, nSplits).contiguous().view(-1)
-
         # cFeature.size() : batchSize x seq Size x hidden size
         batchSize = cFeature.size(0)
-        cFeature = cFeature[:, :nSampledLabels]
-
-        cFeature = cFeature.contiguous().view(nSplits * batchSize, -1)
+        cFeature = cFeature[:, -1, :]
+        cFeature = cFeature.view(batchSize, -1)
 
         predictions = self.linearSpeakerClassifier(cFeature)
         loss = self.lossCriterion(predictions, label).view(-1)
