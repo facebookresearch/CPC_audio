@@ -4,7 +4,7 @@ import torch
 
 from dataset import AudioBatchData
 from model import CPCModel
-from criterion import CPCUnsupersivedCriterion, SpeakerCriterion
+from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, PhoneCriterion
 
 import json
 import numpy as np
@@ -13,12 +13,9 @@ import argparse
 import visdom
 vis = visdom.Visdom()
 
-BATCH_SIZE_BY_GPU = 8
-
 
 def updateAndShowLogs(text, logs, nPredicts):
     logStep = logs["step"]
-
     print("")
     print('-'*50)
     print(text)
@@ -72,7 +69,6 @@ def findAllSeqs(dbPath):
 
     speakers = [f for f in os.listdir(dbPath)
                 if os.path.isdir(os.path.join(dbPath, f))]
-
     outSeqs = []
     for speaker in speakers:
         refPath = os.path.join(dbPath, speaker)
@@ -90,6 +86,17 @@ def parseTxtSplit(pathTxt):
             open(pathTxt, 'r').readlines()]
 
 
+def parseSeqLabels(pathLabels):
+    lines = open(pathLabels, 'r').readlines()
+    output = {"step": 160}
+    maxPhone = 0
+    for line in lines:
+        data = line.split()
+        output[data[0]] = [int(x) for x in data[1:]]
+        maxPhone = max(maxPhone, max(output[data[0]]))
+    return output, maxPhone + 1
+
+
 def trainStep(dataLoader,
               model,
               cpcCriterion,
@@ -101,7 +108,6 @@ def trainStep(dataLoader,
         scheduler.step()
 
     nGtSequenceByGPU = cpcCriterion.nGtSequence // len(model.device_ids)
-
     logs = {"step": 0}
 
     for step, fulldata in enumerate(dataLoader):
@@ -163,7 +169,6 @@ def valStep(dataLoader,
 
     logs["step"] = step
     updateAndShowLogs("Validation loss:", logs, logs["locLoss_val"].shape[0])
-
     return logs
 
 
@@ -223,6 +228,7 @@ if __name__ == "__main__":
                         default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/train_split.txt")
     parser.add_argument('--pathVal', type=str,
                         default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/test_split.txt")
+    parser.add_argument('--pathPhone', type=str, default=None)
     parser.add_argument('--hiddenEncoder', type=int, default=512)
     parser.add_argument('--hiddenGar', type=int, default=256)
     parser.add_argument('--nPredicts', type=int, default=12)
@@ -240,6 +246,7 @@ if __name__ == "__main__":
     parser.add_argument('--samplingType', type=str, default='speaker',
                         choices=['speaker', 'uniform', 'sequence'])
     parser.add_argument('--nGPU', type=int, default=1)
+    parser.add_argument('--batchSizeGPU', type=int, default=8)
     parser.add_argument('--debug', action='store_true')
 
     args = parser.parse_args()
@@ -261,13 +268,20 @@ if __name__ == "__main__":
         seqTrain = seqTrain[:2000]
         seqVal = seqVal[:2000]
 
+    phoneLabels = None
+    if args.supervised and args.pathPhone is not None:
+        print("Loading the phone labels at " + args.pathPhone)
+        phoneLabels, nPhones = parseSeqLabels(args.pathPhone)
+
     trainDataset = AudioBatchData(args.pathDB,
                                   args.sizeWindow,
-                                  seqTrain)
+                                  seqTrain,
+                                  phoneLabels)
 
     valDataset = AudioBatchData(args.pathDB,
                                 args.sizeWindow,
-                                seqVal)
+                                seqVal,
+                                phoneLabels)
 
     cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar)
 
@@ -280,19 +294,21 @@ if __name__ == "__main__":
     assert nGPU <= torch.cuda.device_count(), f"number of GPU asked: {nGPU}," \
         f"number GPU detected: {torch.cuda.device_count()}"
 
-    batchSize = nGPU * BATCH_SIZE_BY_GPU
+    batchSize = nGPU * args.batchSizeGPU
     nGtSequence = nGPU
     print("Let's use", nGPU, "GPUs!")
     cpcModel = torch.nn.DataParallel(cpcModel, device_ids=range(nGPU))
 
-    if args.supervised:
-        cpcCriterion = SpeakerCriterion(
-            args.hiddenGar, trainDataset.getNSpeakers(), 1)
-    else:
+    if not args.supervised:
         cpcCriterion = CPCUnsupersivedCriterion(args.nPredicts, args.hiddenGar,
                                                 args.hiddenEncoder,
                                                 args.negativeSamplingExt,
                                                 nGtSequence)
+    elif args.pathPhone is not None:
+        cpcCriterion = PhoneCriterion(args.hiddenGar, nPhones)
+    else:
+        cpcCriterion = SpeakerCriterion(
+            args.hiddenGar, trainDataset.getNSpeakers(), 1)
 
     optimizeModel = not args.eval
 
@@ -327,7 +343,8 @@ if __name__ == "__main__":
     trainLoader = torch.utils.data.DataLoader(trainDataset,
                                               batch_sampler=trainDataset.getSampler(
                                                   batchSize, args.groupSize,
-                                                  args.samplingType, True),
+                                                  args.samplingType,
+                                                  args.pathPhone is None),
                                               num_workers=2)
     valLoader = torch.utils.data.DataLoader(valDataset,
                                             batch_sampler=valDataset.getSampler(

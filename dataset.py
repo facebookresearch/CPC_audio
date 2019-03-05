@@ -1,6 +1,7 @@
 import os
 import random
 import torch
+from copy import deepcopy
 from torch.utils.data import Dataset
 from torch.utils.data.sampler import Sampler, BatchSampler
 
@@ -13,7 +14,8 @@ class AudioBatchData(Dataset):
     def __init__(self,
                  path,
                  sizeWindow,
-                 seqNames):
+                 seqNames,
+                 phoneLabels):
         """
         Args:
             path (string): path to the training dataset
@@ -23,13 +25,13 @@ class AudioBatchData(Dataset):
 
         self.dbPath = path
         self.sizeWindow = sizeWindow
-        self.loadAll(seqNames)
+        self.loadAll(seqNames, phoneLabels)
 
     def parseSeqName(name):
         speaker, chapter, id = name.split('-')
         return speaker, chapter, id
 
-    def loadAll(self, seqNames):
+    def loadAll(self, seqNames, phoneLabels):
 
         # Speakers
         self.speakers = []
@@ -37,7 +39,11 @@ class AudioBatchData(Dataset):
         # Labels
         self.speakerLabel = []
         self.seqLabel = [0]
+        self.phoneLabels = []
         speakerSize = 0
+        self.phoneSize = 0 if phoneLabels is None else phoneLabels["step"]
+        self.phoneStep = 0 if phoneLabels is None else \
+            self.sizeWindow // self.phoneSize
 
         # Data
         self.data = []
@@ -46,8 +52,9 @@ class AudioBatchData(Dataset):
         seqNames.sort()
 
         for seq in seqNames:
+            seqName = os.path.splitext(seq)[0]
             speaker, chapter, id = \
-                AudioBatchData.parseSeqName(os.path.splitext(seq)[0])
+                AudioBatchData.parseSeqName(seqName)
 
             if len(self.speakers) == 0 or self.speakers[-1] != speaker:
                 self.speakers.append(speaker)
@@ -58,7 +65,16 @@ class AudioBatchData(Dataset):
                                                  os.path.join(chapter, seq)))
 
             seq = torchaudio.load(fullPath)[0].view(-1)
+
+            if phoneLabels is not None:
+                for data in phoneLabels[seqName]:
+                    self.phoneLabels.append(data)
+                newSize = len(phoneLabels[seqName]) * (self.phoneSize)
+                assert(seq.size(0) >= newSize)
+                seq = seq[:newSize]
+
             sizeSeq = seq.size(0)
+
             self.data.append(seq)
             self.seqLabel.append(self.seqLabel[-1] + sizeSeq)
             speakerSize += sizeSeq
@@ -66,7 +82,11 @@ class AudioBatchData(Dataset):
         self.speakerLabel.append(speakerSize)
         self.data = torch.cat(self.data, dim=0)
 
-    def getLabel(self, idx):
+    def getPhonem(self, idx):
+        idPhone = idx // self.phoneSize
+        return self.phoneLabels[idPhone:(idPhone + self.phoneStep)]
+
+    def getSpeakerLabel(self, idx):
 
         idSpeaker = next(x[0] for x in enumerate(
             self.speakerLabel) if x[1] > idx) - 1
@@ -77,11 +97,14 @@ class AudioBatchData(Dataset):
 
     def __getitem__(self, idx):
 
-        speakerLabel = torch.tensor(
-            self.getLabel(idx), dtype=torch.long)
+        if self.phoneSize > 0:
+            label = torch.tensor(self.getPhonem(idx), dtype=torch.long)
+        else:
+            label = torch.tensor(
+                self.getSpeakerLabel(idx), dtype=torch.long)
 
         return self.data[idx:(self.sizeWindow
-                              + idx)].view(1, -1), speakerLabel
+                              + idx)].view(1, -1), label
 
     def getNSpeakers(self):
         return len(self.speakers)
@@ -162,12 +185,13 @@ class AudioBatchSampler(Sampler):
             self.sizeSamplers = [x - 1 for x in self.sizeSamplers]
 
     def __iter__(self):
-        batch, w = [], 0
+        batch = []
         order = [[x, i] for i, x in enumerate(self.sizeSamplers)]
         samplers = [torch.randperm(s) for s in self.sizeSamplers]
-        order.sort(reverse=True)
         offset = random.randint(0, self.sizeWindow // 2) if self.offset else 0
-        for idx in range(sum(self.sizeSamplers)):
+        nSamplers = len(order) - 1
+        while nSamplers >= 0:
+            w = random.randint(0, nSamplers)
             shift = min(self.groupSize, order[w][0])
             shift = min(shift, self.batchSize - len(batch))
             indexSampler, nInterval = order[w]
@@ -177,11 +201,9 @@ class AudioBatchSampler(Sampler):
                 batch.append(self.getIndex(indexInInterval, nInterval, offset))
                 indexSampler += 1
             order[w][0] -= shift
-            if w + 1 < len(order) and order[w+1][0] > 0:
-                w += 1
-            else:
-                order.sort(reverse=True)
-                w = 0
+            if order[w][0] == 0:
+                del order[w]
+                nSamplers -= 1
             if len(batch) == self.batchSize:
                 yield batch
                 batch = []
@@ -192,7 +214,7 @@ class AudioBatchSampler(Sampler):
         return self.sizeSamplers[idx]
 
     def getIndex(self, x, iInterval, offset):
-        return  offset + x * self.sizeWindow + self.samplingIntervals[iInterval]
+        return offset + x * self.sizeWindow + self.samplingIntervals[iInterval]
 
     def __len__(self):
         return sum(self.sizeSamplers) // self.batchSize

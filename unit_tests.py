@@ -1,10 +1,11 @@
 import unittest
 import torch
 from dataset import AudioBatchSampler, AudioBatchData
+from nose.tools import *
 
 
 class TestSampler(unittest.TestCase):
-    def test_api(self):
+    def testSampler(self):
         batchSize = 16
         groupSize = 4
         samplingIntervals = [0, 256, 459, 687, 1908, 2230]
@@ -38,13 +39,14 @@ class TestDataLoader(unittest.TestCase):
         self.pathDB = "/datasets01/LibriSpeech/022219/train-clean-100/"
         self.sizeWindow = 20480
 
-    def test_loadData(self):
+    def testLoadData(self):
 
-        testData = AudioBatchData(self.pathDB, self.sizeWindow, self.seqNames)
+        testData = AudioBatchData(self.pathDB, self.sizeWindow,
+                                  self.seqNames, None)
         assert(testData.getNSpeakers() == 9)
         assert(testData.getNSeqs() == 9)
 
-    def test_sampleSpeaker(self):
+    def testDataLoader(self):
 
         batchSize = 16
         groupSize = 4
@@ -52,14 +54,15 @@ class TestDataLoader(unittest.TestCase):
         seqNames = [p.replace('\n', '') + ".flac" for p in
                     open(pathSeqs, 'r').readlines()]
 
-        testData = AudioBatchData(self.pathDB, self.sizeWindow, seqNames)
+        testData = AudioBatchData(self.pathDB, self.sizeWindow, seqNames, None)
 
         # Check the number of speakers
         nSpeaker = testData.getNSpeakers()
 
         nValidBatch = 0
         nItemLabels = [0 for x in range(nSpeaker)]
-        testSampler = testData.getSampler(batchSize, groupSize, "speaker", True)
+        testSampler = testData.getSampler(
+            batchSize, groupSize, "speaker", True)
         testDataLoader = torch.utils.data.DataLoader(testData,
                                                      batch_sampler=testSampler,
                                                      num_workers=2)
@@ -90,3 +93,31 @@ class TestDataLoader(unittest.TestCase):
             r += remaining
 
         assert(r < batchSize)
+
+
+class TestPhonemParser(unittest.TestCase):
+
+    def setUp(self):
+        from train import parseSeqLabels
+        self.seqLoader = parseSeqLabels
+        self.pathPhone = \
+            "/private/home/mriviere/LibriSpeech/LibriSpeech100_labels_split/converted_aligned_phones.txt"
+
+    def testSeqLoader(self):
+        phoneData, nPhones = self.seqLoader(self.pathPhone)
+        eq_(len(phoneData), 28539)
+        eq_(phoneData['step'], 160)
+        eq_(phoneData['4051-11218-0044'][43], 14)
+        eq_(len(phoneData['4051-11218-0044']), 1119)
+        eq_(nPhones, 41)
+
+    def testSeqLabels(self):
+        sizeWindow = 640
+        seqNames = ['4051-11218-0044.flac', '2911-12359-0007.flac']
+        phoneData, _ = self.seqLoader(self.pathPhone)
+        pathDB = "/datasets01/LibriSpeech/022219/train-clean-100/"
+        testData = AudioBatchData(pathDB, sizeWindow, seqNames, phoneData)
+
+        eq_(testData.getPhonem(81280), [0, 0, 0, 0])
+        eq_(testData.getPhonem(84841), [0, 0, 0, 18])
+        eq_(testData.getPhonem(88201), [14, 14, 14, 14])
