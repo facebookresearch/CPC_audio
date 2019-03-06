@@ -67,12 +67,21 @@ class CPCUnsupersivedCriterion(nn.Module):
                                 dtype=torch.long,
                                 device=encodedData.device)
 
-        extIdx = np.random.randint(0, nNegativeExt,
-                                   size=(negativeSamplingExt * windowSize * self.nGtSequence))
-
-        negExt = encodedData[extIdx].view(self.nGtSequence,
-                                          negativeSamplingExt,
-                                          windowSize,
+        if negativeSamplingExt > 0:
+            extIdx = np.random.randint(0, nNegativeExt,
+                                       size=(negativeSamplingExt
+                                             * windowSize
+                                             * self.nGtSequence))
+            negExt = encodedData[extIdx].view(self.nGtSequence,
+                                              negativeSamplingExt,
+                                              windowSize,
+                                              dimEncoded)
+        else:
+            negExt = encodedData.view(-1, 1, dimEncoded).expand(-1,
+                                                                windowSize,
+                                                                dimEncoded)
+            negExt = negExt.view(1, -1, windowSize, dimEncoded
+                                 ).expand(self.nGtSequence, -1, windowSize,
                                           dimEncoded)
 
         outputs = []
@@ -140,4 +149,29 @@ class SpeakerCriterion(nn.Module):
 
         acc = (predictions.max(1)[1] == label).double().mean().view(-1)
 
+        return loss, acc
+
+
+class PhoneCriterion(nn.Module):
+
+    def __init__(self, dimEncoder, nPhones):
+
+        super(PhoneCriterion, self).__init__()
+
+        self.PhoneCriterionClassifier = nn.Linear(
+            dimEncoder, nPhones)
+        self.lossCriterion = nn.CrossEntropyLoss()
+        self.nGtSequence = -1
+
+    def forward(self, cFeature, gtPredictions, otherEncoded, label):
+
+        # cFeature.size() : batchSize x seq Size x hidden size
+        batchSize, seqSize = cFeature.size(0), cFeature.size(1)
+        cFeature = cFeature.contiguous().view(batchSize * seqSize, -1)
+        label = label.view(-1)
+
+        predictions = self.PhoneCriterionClassifier(cFeature)
+        loss = self.lossCriterion(predictions, label).view(-1)
+
+        acc = (predictions.max(1)[1] == label).double().mean().view(-1)
         return loss, acc
