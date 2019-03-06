@@ -102,7 +102,8 @@ def trainStep(dataLoader,
               cpcCriterion,
               optimizer,
               scheduler):
-    model.train()
+    if model.optimize:
+        model.train()
     cpcCriterion.train()
     if scheduler is not None:
         scheduler.step()
@@ -312,8 +313,13 @@ if __name__ == "__main__":
 
     optimizeModel = not args.eval
 
+    cpcModel.optimize = True
     if args.eval:
         print("Evaluation mode")
+        cpcModel.optimize = False
+        cpcModel.eval()
+        for g in cpcModel.parameters():
+            g.requires_grad = False
 
     cpcCriterion.cuda()
     cpcModel.cuda()
