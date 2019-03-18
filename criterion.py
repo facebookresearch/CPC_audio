@@ -107,14 +107,13 @@ class CPCUnsupersivedCriterion(nn.Module):
 
 class SpeakerCriterion(nn.Module):
 
-    def __init__(self, dimEncoder, nSpeakers, nSample):
+    def __init__(self, dimEncoder, nSpeakers):
 
         super(SpeakerCriterion, self).__init__()
 
         self.linearSpeakerClassifier = nn.Linear(
-            dimEncoder * nSample, nSpeakers)
+            dimEncoder, nSpeakers)
         self.lossCriterion = nn.CrossEntropyLoss()
-        self.nSample = nSample
 
     def forward(self, cFeature, otherEncoded, label):
 
