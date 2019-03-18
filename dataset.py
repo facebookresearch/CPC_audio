@@ -199,11 +199,8 @@ class AudioBatchSampler(Sampler):
     Note:
         - you can have several groups with the same label in the same minibatch
         (because input labels are not necessary envenly represented)
-        - if batchSize % k != 0 then the last group will have the size
-        batchSize % k
-        - if not @param strict when there is not enough sample in a label to
-        make a group of k elements, all remaining elements in that label are
-        taken
+        - if batchSize % k != 0 then the last group will have size
+        (-batchSize) % k
     """
     def __init__(self,
                  batchSize,
