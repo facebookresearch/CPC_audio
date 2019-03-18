@@ -86,12 +86,3 @@ class CPCModel(nn.Module):
         cFeature = self.gAR(encodedData)
 
         return cFeature, encodedData
-
-
-class ID(nn.Module):
-
-    def __init__(self):
-        super(ID, self).__init__()
-
-    def forward(self, x, *args, **kwargs):
-        return x, None, None

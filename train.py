@@ -172,7 +172,6 @@ def run(trainLoader,
 
         logs["epoch"].append(epoch)
 
-        # Dirty checkpoint save
         if pathCheckpoint is not None:
             stateDict = {"gEncoder": cpcModel.module.state_dict(),
                          "cpcCriterion": cpcCriterion.state_dict()}
