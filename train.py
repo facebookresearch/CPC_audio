@@ -3,7 +3,7 @@ from random import shuffle
 import torch
 
 from dataset import AudioBatchData
-from model import CPCModel
+from model import CPCModel, ID
 from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, PhoneCriterion
 
 import json
@@ -108,33 +108,30 @@ def trainStep(dataLoader,
     if scheduler is not None:
         scheduler.step()
 
-    nGtSequenceByGPU = cpcCriterion.nGtSequence // len(model.device_ids)
     logs = {"step": 0}
 
     for step, fulldata in enumerate(dataLoader):
 
-        optimizer.zero_grad()
-
         batchData, label = fulldata
         batchData = batchData.cuda()
         label = label.cuda()
-        cFeature, gtPredictions, otherEncoded = model(
-            batchData, nAR=nGtSequenceByGPU)
+        cFeature, encodedData = model(batchData)
 
-        allLosses, allAcc = cpcCriterion(
-            cFeature, gtPredictions, otherEncoded, label)
+        allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
 
         totLoss = allLosses.sum()
         totLoss.backward()
+
         optimizer.step()
+        optimizer.zero_grad()
 
         if "locLoss_train" not in logs:
-            logs["locLoss_train"] = np.zeros(allLosses.size(0))
-            logs["locAcc_train"] = np.zeros(allLosses.size(0))
+            logs["locLoss_train"] = np.zeros(allLosses.size(1))
+            logs["locAcc_train"] = np.zeros(allLosses.size(1))
 
         logs["step"] += 1
-        logs["locLoss_train"] += allLosses.detach().cpu().numpy()
-        logs["locAcc_train"] += allAcc.cpu().numpy()
+        logs["locLoss_train"] += (allLosses.mean(dim=0)).detach().cpu().numpy()
+        logs["locAcc_train"] += (allAcc.mean(dim=0)).cpu().numpy()
 
     updateAndShowLogs("Update %d, training loss:" %
                       (logs["step"] + 1), logs, logs["locLoss_train"].shape[0])
@@ -148,25 +145,23 @@ def valStep(dataLoader,
     cpcCriterion.eval()
 
     logs = {"step": 0}
-    nGtSequenceByGPU = cpcCriterion.nGtSequence // len(model.device_ids)
     for step, fulldata in enumerate(dataLoader):
 
         batchData, label = fulldata
+
         batchData = batchData.cuda()
         label = label.cuda()
-        cFeature, gtPredictions, otherEncoded = model(batchData,
-                                                      nAR=nGtSequenceByGPU)
+        cFeature, encodedData = model(batchData)
 
-        allLosses, allAcc = cpcCriterion(
-            cFeature, gtPredictions, otherEncoded, label)
+        allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
 
         if "locLoss_val" not in logs:
-            logs["locLoss_val"] = np.zeros(allLosses.size(0))
-            logs["locAcc_val"] = np.zeros(allLosses.size(0))
+            logs["locLoss_val"] = np.zeros(allLosses.size(1))
+            logs["locAcc_val"] = np.zeros(allLosses.size(1))
 
         logs["step"] += 1
-        logs["locLoss_val"] += allLosses.detach().cpu().numpy()
-        logs["locAcc_val"] += allAcc.cpu().numpy()
+        logs["locLoss_val"] += allLosses.mean(dim=0).detach().cpu().numpy()
+        logs["locAcc_val"] += allAcc.mean(dim=0).cpu().numpy()
 
     logs["step"] = step
     updateAndShowLogs("Validation loss:", logs, logs["locLoss_val"].shape[0])
@@ -245,7 +240,7 @@ if __name__ == "__main__":
                         default=0)
     parser.add_argument('--groupSize', type=int, default=2)
     parser.add_argument('--samplingType', type=str, default='speaker',
-                        choices=['speaker', 'uniform', 'sequence'])
+                        choices=['speaker', 'uniform', 'sequence', 'sequential'])
     parser.add_argument('--nGPU', type=int, default=1)
     parser.add_argument('--batchSizeGPU', type=int, default=8)
     parser.add_argument('--debug', action='store_true')
@@ -284,7 +279,8 @@ if __name__ == "__main__":
                                 seqVal,
                                 phoneLabels)
 
-    cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar)
+    cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar,
+                        args.samplingType == "sequential")
 
     if args.load != "":
         print("Loading checkpoint " + args.load)
@@ -296,23 +292,20 @@ if __name__ == "__main__":
         f"number GPU detected: {torch.cuda.device_count()}"
 
     batchSize = nGPU * args.batchSizeGPU
-    nGtSequence = nGPU
     print("Let's use", nGPU, "GPUs!")
     cpcModel = torch.nn.DataParallel(cpcModel, device_ids=range(nGPU))
 
     if not args.supervised:
         cpcCriterion = CPCUnsupersivedCriterion(args.nPredicts, args.hiddenGar,
                                                 args.hiddenEncoder,
-                                                args.negativeSamplingExt,
-                                                nGtSequence)
+                                                args.negativeSamplingExt)
     elif args.pathPhone is not None:
         cpcCriterion = PhoneCriterion(args.hiddenGar, nPhones)
     else:
         cpcCriterion = SpeakerCriterion(
             args.hiddenGar, trainDataset.getNSpeakers(), 1)
 
-    optimizeModel = not args.eval
-
+    cpcCriterion = torch.nn.DataParallel(cpcCriterion, device_ids=range(nGPU))
     cpcModel.optimize = True
     if args.eval:
         print("Evaluation mode")
@@ -327,7 +320,7 @@ if __name__ == "__main__":
     # Optimizer
     g_params = list(cpcCriterion.parameters())
 
-    if optimizeModel:
+    if not args.eval:
         print("Optimizing model")
         g_params += list(cpcModel.parameters())
 
@@ -335,7 +328,7 @@ if __name__ == "__main__":
 
     if args.schedulerStep > 0:
         scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer, step_size=args.schedulerStep)
+            optimizer, step_size=args.schedulerStep, gamma=0.3)
     else:
         scheduler = None
 
@@ -350,13 +343,13 @@ if __name__ == "__main__":
                                               batch_sampler=trainDataset.getSampler(
                                                   batchSize, args.groupSize,
                                                   args.samplingType,
-                                                  args.pathPhone is None),
-                                              num_workers=2)
+                                                  True),
+                                              num_workers=nGPU)
     valLoader = torch.utils.data.DataLoader(valDataset,
                                             batch_sampler=valDataset.getSampler(
                                                 batchSize, args.groupSize,
                                                 args.samplingType, False),
-                                            num_workers=2)
+                                            num_workers=nGPU)
 
     run(trainLoader,
         valLoader,

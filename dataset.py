@@ -1,7 +1,6 @@
 import os
 import random
 import torch
-from copy import deepcopy
 from torch.utils.data import Dataset
 from torch.utils.data.sampler import Sampler, BatchSampler
 
@@ -10,7 +9,6 @@ import torchaudio
 
 class AudioBatchData(Dataset):
 
-    # Work on this and on the sampler
     def __init__(self,
                  path,
                  sizeWindow,
@@ -74,7 +72,6 @@ class AudioBatchData(Dataset):
                 seq = seq[:newSize]
 
             sizeSeq = seq.size(0)
-
             self.data.append(seq)
             self.seqLabel.append(self.seqLabel[-1] + sizeSeq)
             speakerSize += sizeSeq
@@ -103,8 +100,8 @@ class AudioBatchData(Dataset):
             label = torch.tensor(
                 self.getSpeakerLabel(idx), dtype=torch.long)
 
-        return self.data[idx:(self.sizeWindow
-                              + idx)].view(1, -1), label
+        outData = self.data[idx:(self.sizeWindow + idx)].view(1, -1)
+        return outData, label
 
     def getNSpeakers(self):
         return len(self.speakers)
@@ -115,10 +112,14 @@ class AudioBatchData(Dataset):
     def getSampler(self, batchSize, groupSize, type, offset):
         if type == "speaker":
             return AudioBatchSampler(batchSize, groupSize,
-                                     self.speakerLabel, self.sizeWindow, offset)
+                                     self.speakerLabel, self.sizeWindow,
+                                     offset)
         if type == "sequence":
             return AudioBatchSampler(batchSize, groupSize,
                                      self.seqLabel, self.sizeWindow, offset)
+        if type == "sequential":
+            return SequentialSampler(len(self.data), self.sizeWindow,
+                                     offset, batchSize)
         sampler = RandomAudioSampler(len(self.data), self.sizeWindow, offset)
         return BatchSampler(sampler, batchSize, True)
 
@@ -136,7 +137,32 @@ class RandomAudioSampler(Sampler):
 
     def __iter__(self):
         offset = random.randint(0, self.sizeWindow // 2) if self.offset else 0
-        return iter((offset + self.sizeWindow * torch.randperm(self.len)).tolist())
+        return iter((offset
+                    + self.sizeWindow * torch.randperm(self.len)).tolist())
+
+    def __len__(self):
+        return self.len
+
+
+class SequentialSampler(Sampler):
+
+    def __init__(self, dataSize, sizeWindow, offset, batchSize):
+
+        self.len = (dataSize // sizeWindow) // batchSize
+        self.sizeWindow = sizeWindow
+        self.offset = offset
+        self.startBatches = [x * (dataSize // batchSize)
+                             for x in range(batchSize)]
+        self.batchSize = batchSize
+
+        if offset:
+            self.len -= 1
+
+    def __iter__(self):
+        offset = random.randint(0, self.sizeWindow) if self.offset else 0
+        for idx in range(self.len):
+            yield [offset + self.sizeWindow *idx
+                   + start for start in self.startBatches]
 
     def __len__(self):
         return self.len
@@ -189,9 +215,10 @@ class AudioBatchSampler(Sampler):
         order = [[x, i] for i, x in enumerate(self.sizeSamplers)]
         samplers = [torch.randperm(s) for s in self.sizeSamplers]
         offset = random.randint(0, self.sizeWindow // 2) if self.offset else 0
-        nSamplers = len(order) - 1
-        while nSamplers >= 0:
-            w = random.randint(0, nSamplers)
+        nSamplers = len(order)
+        oneSeq = self.batchSize == self.groupSize
+        while nSamplers > 0:
+            w = random.choices(range(nSamplers), [x[0] for x in order])[0]
             shift = min(self.groupSize, order[w][0])
             shift = min(shift, self.batchSize - len(batch))
             indexSampler, nInterval = order[w]
@@ -204,11 +231,9 @@ class AudioBatchSampler(Sampler):
             if order[w][0] == 0:
                 del order[w]
                 nSamplers -= 1
-            if len(batch) == self.batchSize:
+            if len(batch) == self.batchSize or oneSeq and shift > 0:
                 yield batch
                 batch = []
-                order.sort(reverse=True)
-                w = 0
 
     def getSpeakerMaxSize(self, idx):
         return self.sizeSamplers[idx]

@@ -1,7 +1,7 @@
 import unittest
 import torch
 from dataset import AudioBatchSampler, AudioBatchData
-from nose.tools import *
+from nose.tools import eq_
 
 
 class TestSampler(unittest.TestCase):
