@@ -1,7 +1,7 @@
 import unittest
 import torch
 from dataset import AudioBatchSampler, AudioBatchData
-from nose.tools import *
+from nose.tools import eq_
 
 
 class TestSampler(unittest.TestCase):
@@ -117,7 +117,6 @@ class TestPhonemParser(unittest.TestCase):
         phoneData, _ = self.seqLoader(self.pathPhone)
         pathDB = "/datasets01/LibriSpeech/022219/train-clean-100/"
         testData = AudioBatchData(pathDB, sizeWindow, seqNames, phoneData)
-
         eq_(testData.getPhonem(81280), [0, 0, 0, 0])
         eq_(testData.getPhonem(84841), [0, 0, 0, 18])
         eq_(testData.getPhonem(88201), [14, 14, 14, 14])

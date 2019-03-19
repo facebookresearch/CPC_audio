@@ -1,17 +1,15 @@
+import argparse
+import json
 import os
 from random import shuffle
+
+import numpy as np
 import torch
 
 from dataset import AudioBatchData
 from model import CPCModel
-from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, PhoneCriterion
-
-import json
-import numpy as np
-import argparse
-
-import visdom
-vis = visdom.Visdom()
+from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, \
+                      PhoneCriterion
 
 
 def updateAndShowLogs(text, logs, nPredicts):
@@ -35,38 +33,12 @@ def updateAndShowLogs(text, logs, nPredicts):
     print('-'*50)
 
 
-def publishLogs(data, name="", window_tokens=None, env="main"):
-    if window_tokens is None:
-        window_tokens = {key: None for key in data}
-
-    for key, plot in data.items():
-
-        if key in ("step", "epoch"):
-            continue
-
-        nItems = len(plot)
-        inputY = np.array([plot[x] for x in range(nItems) if 0 is not None])
-        inputX = np.array([data["epoch"][x]
-                           for x in range(nItems) if plot[x] is not None])
-
-        opts = {'title': name + " " + key,
-                'legend': [str(x) for x in range(len(plot[0]))],
-                'xlabel': 'epoch', 'ylabel': 'loss'}
-
-        window_tokens[key] = vis.line(X=inputX, Y=inputY, opts=opts,
-                                      win=window_tokens[key], env=env)
-
-    return window_tokens
-
-
 def saveLogs(data, pathLogs):
-
     with open(pathLogs, 'w') as file:
         json.dump(data, file, indent=2)
 
 
 def findAllSeqs(dbPath):
-
     speakers = [f for f in os.listdir(dbPath)
                 if os.path.isdir(os.path.join(dbPath, f))]
     outSeqs = []
@@ -88,7 +60,7 @@ def parseTxtSplit(pathTxt):
 
 def parseSeqLabels(pathLabels):
     lines = open(pathLabels, 'r').readlines()
-    output = {"step": 160}
+    output = {"step": 160}  # Step in librispeech dataset is 160bits
     maxPhone = 0
     for line in lines:
         data = line.split()
@@ -108,33 +80,28 @@ def trainStep(dataLoader,
     if scheduler is not None:
         scheduler.step()
 
-    nGtSequenceByGPU = cpcCriterion.nGtSequence // len(model.device_ids)
     logs = {"step": 0}
-
     for step, fulldata in enumerate(dataLoader):
-
-        optimizer.zero_grad()
 
         batchData, label = fulldata
         batchData = batchData.cuda()
         label = label.cuda()
-        cFeature, gtPredictions, otherEncoded = model(
-            batchData, nAR=nGtSequenceByGPU)
+        cFeature, encodedData = model(batchData)
 
-        allLosses, allAcc = cpcCriterion(
-            cFeature, gtPredictions, otherEncoded, label)
+        allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
 
         totLoss = allLosses.sum()
         totLoss.backward()
         optimizer.step()
+        optimizer.zero_grad()
 
         if "locLoss_train" not in logs:
-            logs["locLoss_train"] = np.zeros(allLosses.size(0))
-            logs["locAcc_train"] = np.zeros(allLosses.size(0))
+            logs["locLoss_train"] = np.zeros(allLosses.size(1))
+            logs["locAcc_train"] = np.zeros(allLosses.size(1))
 
         logs["step"] += 1
-        logs["locLoss_train"] += allLosses.detach().cpu().numpy()
-        logs["locAcc_train"] += allAcc.cpu().numpy()
+        logs["locLoss_train"] += (allLosses.mean(dim=0)).detach().cpu().numpy()
+        logs["locAcc_train"] += (allAcc.mean(dim=0)).cpu().numpy()
 
     updateAndShowLogs("Update %d, training loss:" %
                       (logs["step"] + 1), logs, logs["locLoss_train"].shape[0])
@@ -148,25 +115,23 @@ def valStep(dataLoader,
     cpcCriterion.eval()
 
     logs = {"step": 0}
-    nGtSequenceByGPU = cpcCriterion.nGtSequence // len(model.device_ids)
     for step, fulldata in enumerate(dataLoader):
 
         batchData, label = fulldata
+
         batchData = batchData.cuda()
         label = label.cuda()
-        cFeature, gtPredictions, otherEncoded = model(batchData,
-                                                      nAR=nGtSequenceByGPU)
+        cFeature, encodedData = model(batchData)
 
-        allLosses, allAcc = cpcCriterion(
-            cFeature, gtPredictions, otherEncoded, label)
+        allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
 
         if "locLoss_val" not in logs:
-            logs["locLoss_val"] = np.zeros(allLosses.size(0))
-            logs["locAcc_val"] = np.zeros(allLosses.size(0))
+            logs["locLoss_val"] = np.zeros(allLosses.size(1))
+            logs["locAcc_val"] = np.zeros(allLosses.size(1))
 
         logs["step"] += 1
-        logs["locLoss_val"] += allLosses.detach().cpu().numpy()
-        logs["locAcc_val"] += allAcc.cpu().numpy()
+        logs["locLoss_val"] += allLosses.mean(dim=0).detach().cpu().numpy()
+        logs["locAcc_val"] += allAcc.mean(dim=0).cpu().numpy()
 
     logs["step"] = step
     updateAndShowLogs("Validation loss:", logs, logs["locLoss_val"].shape[0])
@@ -186,7 +151,6 @@ def run(trainLoader,
 
     #  Logs
     logs = {"epoch": []}
-    windowToken = None
 
     for epoch in range(nEpoch):
 
@@ -207,10 +171,7 @@ def run(trainLoader,
             logs[key].append(value)
 
         logs["epoch"].append(epoch)
-        windowToken = publishLogs(
-            logs, name="CPC validation", window_tokens=windowToken)
 
-        # Dirty checkpoint save
         if pathCheckpoint is not None:
             stateDict = {"gEncoder": cpcModel.module.state_dict(),
                          "cpcCriterion": cpcCriterion.state_dict()}
@@ -245,13 +206,15 @@ if __name__ == "__main__":
                         default=0)
     parser.add_argument('--groupSize', type=int, default=2)
     parser.add_argument('--samplingType', type=str, default='speaker',
-                        choices=['speaker', 'uniform', 'sequence'])
-    parser.add_argument('--nGPU', type=int, default=1)
+                        choices=['speaker', 'uniform',
+                                 'sequence', 'sequential'])
+    parser.add_argument('--nGPU', type=int, default=-1)
     parser.add_argument('--batchSizeGPU', type=int, default=8)
     parser.add_argument('--debug', action='store_true')
 
     args = parser.parse_args()
 
+    # Datasets
     if args.pathTrain is None:
         seqNames = findAllSeqs(args.pathDB)
     else:
@@ -284,7 +247,9 @@ if __name__ == "__main__":
                                 seqVal,
                                 phoneLabels)
 
-    cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar)
+    # Base Model
+    cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar,
+                        args.samplingType == "sequential")
 
     if args.load != "":
         print("Loading checkpoint " + args.load)
@@ -296,23 +261,21 @@ if __name__ == "__main__":
         f"number GPU detected: {torch.cuda.device_count()}"
 
     batchSize = nGPU * args.batchSizeGPU
-    nGtSequence = nGPU
     print("Let's use", nGPU, "GPUs!")
     cpcModel = torch.nn.DataParallel(cpcModel, device_ids=range(nGPU))
 
+    # Training criterion
     if not args.supervised:
         cpcCriterion = CPCUnsupersivedCriterion(args.nPredicts, args.hiddenGar,
                                                 args.hiddenEncoder,
-                                                args.negativeSamplingExt,
-                                                nGtSequence)
+                                                args.negativeSamplingExt)
     elif args.pathPhone is not None:
         cpcCriterion = PhoneCriterion(args.hiddenGar, nPhones)
     else:
-        cpcCriterion = SpeakerCriterion(
-            args.hiddenGar, trainDataset.getNSpeakers(), 1)
+        cpcCriterion = SpeakerCriterion(args.hiddenGar,
+                                        trainDataset.getNSpeakers())
 
-    optimizeModel = not args.eval
-
+    cpcCriterion = torch.nn.DataParallel(cpcCriterion, device_ids=range(nGPU))
     cpcModel.optimize = True
     if args.eval:
         print("Evaluation mode")
@@ -327,18 +290,20 @@ if __name__ == "__main__":
     # Optimizer
     g_params = list(cpcCriterion.parameters())
 
-    if optimizeModel:
+    if not args.eval:
         print("Optimizing model")
         g_params += list(cpcModel.parameters())
 
     optimizer = torch.optim.Adam(g_params, lr=args.learningRate)
 
+    # Scheduler
     if args.schedulerStep > 0:
         scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer, step_size=args.schedulerStep)
+            optimizer, step_size=args.schedulerStep, gamma=0.3)
     else:
         scheduler = None
 
+    # Checkpoint
     if args.pathCheckpoint is not None:
         if not os.path.isdir(args.pathCheckpoint):
             os.mkdir(args.pathCheckpoint)
@@ -350,14 +315,13 @@ if __name__ == "__main__":
                                               batch_sampler=trainDataset.getSampler(
                                                   batchSize, args.groupSize,
                                                   args.samplingType,
-                                                  args.pathPhone is None),
-                                              num_workers=2)
+                                                  True),
+                                              num_workers=nGPU)
     valLoader = torch.utils.data.DataLoader(valDataset,
                                             batch_sampler=valDataset.getSampler(
                                                 batchSize, args.groupSize,
                                                 args.samplingType, False),
-                                            num_workers=2)
-
+                                            num_workers=nGPU)
     run(trainLoader,
         valLoader,
         cpcModel,
