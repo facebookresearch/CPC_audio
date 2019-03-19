@@ -24,7 +24,6 @@ class PredictionNetwork(nn.Module):
         out = []
         for k in range(len(self.predictors)):
 
-            # torch.nn.Bilinear ? Replace
             locC = self.predictors[k](c)
             locC = locC.view(locC.size(0), 1, locC.size(1), locC.size(2))
             outK = (locC*candidates[k]).mean(dim=3)
@@ -35,10 +34,10 @@ class PredictionNetwork(nn.Module):
 class CPCUnsupersivedCriterion(nn.Module):
 
     def __init__(self,
-                 nPredicts,
-                 dimOutputAR,
-                 dimOutputEncoder,
-                 negativeSamplingExt):
+                 nPredicts,             # Number of steps
+                 dimOutputAR,           # Dimension of G_ar
+                 dimOutputEncoder,      # Dimension of the convolutional net
+                 negativeSamplingExt):  # Number of negative samples to draw
 
         super(CPCUnsupersivedCriterion, self).__init__()
         self.wPrediction = PredictionNetwork(
@@ -49,11 +48,10 @@ class CPCUnsupersivedCriterion(nn.Module):
 
     def sample(self, encodedData, windowSize):
 
-        # Correct the number of negative samples to make sure that the number
-        # of indices to draw is lower than the available number of indices
         batchSize, nNegativeExt, dimEncoded = encodedData.size()
         outputs = []
 
+        # Draw nNegativeExt * batchSize negative samples anywhere in the batch
         negExt = encodedData.view(-1, dimEncoded)
         extIdx = np.random.randint(0, nNegativeExt * batchSize,
                                    size=(self.negativeSamplingExt
@@ -110,7 +108,6 @@ class SpeakerCriterion(nn.Module):
     def __init__(self, dimEncoder, nSpeakers):
 
         super(SpeakerCriterion, self).__init__()
-
         self.linearSpeakerClassifier = nn.Linear(
             dimEncoder, nSpeakers)
         self.lossCriterion = nn.CrossEntropyLoss()

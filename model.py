@@ -24,11 +24,9 @@ class EncoderNetwork(nn.Module):
         self.batchNorm4 = nn.BatchNorm1d(sizeHidden)
 
     def getDimOutput(self):
-
         return self.conv4.out_channels
 
     def forward(self, x):
-
         x = F.relu(self.batchNorm0(self.conv0(x)))
         x = F.relu(self.batchNorm1(self.conv1(x)))
         x = F.relu(self.batchNorm2(self.conv2(x)))
@@ -56,7 +54,6 @@ class AutoregressiveNetwork(nn.Module):
         return self.baseNet.hidden_size
 
     def forward(self, x):
-
         self.baseNet.flatten_parameters()
         x, h = self.baseNet(x, self.hidden)
         if self.keepHidden:
@@ -81,8 +78,5 @@ class CPCModel(nn.Module):
 
     def forward(self, batchData):
         encodedData = self.gEncoder(batchData).permute(0, 2, 1)
-
-        # We are going to perform one prediction sequence per GPU
         cFeature = self.gAR(encodedData)
-
         return cFeature, encodedData
