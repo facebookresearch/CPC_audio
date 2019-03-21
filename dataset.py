@@ -1,6 +1,7 @@
 import os
 import random
 import torch
+from tqdm import tqdm
 from torch.utils.data import Dataset
 from torch.utils.data.sampler import Sampler, BatchSampler
 
@@ -54,27 +55,12 @@ class AudioBatchData(Dataset):
         # To accelerate the process a bit
         seqNames.sort()
 
-        for seq in seqNames:
-            seqName = os.path.splitext(seq)[0]
-            speaker, chapter, id = \
-                AudioBatchData.parseSeqName(seqName)
+        for seq in tqdm(seqNames):
+            speaker, seq = self.load(seq, phoneLabels)
 
             if len(self.speakers) == 0 or self.speakers[-1] != speaker:
                 self.speakers.append(speaker)
                 self.speakerLabel.append(speakerSize)
-
-            fullPath = os.path.join(self.dbPath,
-                                    os.path.join(speaker,
-                                                 os.path.join(chapter, seq)))
-
-            seq = torchaudio.load(fullPath)[0].view(-1)
-
-            if phoneLabels is not None:
-                for data in phoneLabels[seqName]:
-                    self.phoneLabels.append(data)
-                newSize = len(phoneLabels[seqName]) * (self.phoneSize)
-                assert(seq.size(0) >= newSize)
-                seq = seq[:newSize]
 
             sizeSeq = seq.size(0)
             self.data.append(seq)
@@ -83,6 +69,25 @@ class AudioBatchData(Dataset):
 
         self.speakerLabel.append(speakerSize)
         self.data = torch.cat(self.data, dim=0)
+
+    def load(self, seq, phoneLabels):
+        seqName = os.path.splitext(seq)[0]
+        speaker, chapter, id = \
+            AudioBatchData.parseSeqName(seqName)
+
+        fullPath = os.path.join(self.dbPath,
+                                os.path.join(speaker,
+                                             os.path.join(chapter, seq)))
+
+        seq = torchaudio.load(fullPath)[0].view(-1)
+
+        if phoneLabels is not None:
+            for data in phoneLabels[seqName]:
+                self.phoneLabels.append(data)
+            newSize = len(phoneLabels[seqName]) * (self.phoneSize)
+            assert(seq.size(0) >= newSize)
+            seq = seq[:newSize]
+        return speaker, seq
 
     def getPhonem(self, idx):
         idPhone = idx // self.phoneSize

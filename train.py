@@ -214,6 +214,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    print(f'CONFIG:\n{json.dumps(vars(args), indent=4, sort_keys=True)}')
+    print('-' * 50)
     # Datasets
     if args.pathTrain is None:
         seqNames = findAllSeqs(args.pathDB)
@@ -237,6 +239,7 @@ if __name__ == "__main__":
         print("Loading the phone labels at " + args.pathPhone)
         phoneLabels, nPhones = parseSeqLabels(args.pathPhone)
 
+    print(f'Loading audio data at {args.pathDB}')
     trainDataset = AudioBatchData(args.pathDB,
                                   args.sizeWindow,
                                   seqTrain,
