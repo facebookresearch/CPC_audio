@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 from random import shuffle
+import sys
 
 import numpy as np
 import torch
@@ -84,8 +85,8 @@ def trainStep(dataLoader,
     for step, fulldata in enumerate(dataLoader):
 
         batchData, label = fulldata
-        batchData = batchData.cuda()
-        label = label.cuda()
+        batchData = batchData.cuda(non_blocking=True)
+        label = label.cuda(non_blocking=True)
         cFeature, encodedData = model(batchData)
 
         allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
@@ -119,8 +120,8 @@ def valStep(dataLoader,
 
         batchData, label = fulldata
 
-        batchData = batchData.cuda()
-        label = label.cuda()
+        batchData = batchData.cuda(non_blocking=True)
+        label = label.cuda(non_blocking=True)
         cFeature, encodedData = model(batchData)
 
         allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
@@ -180,40 +181,7 @@ def run(trainLoader,
             saveLogs(logs, pathCheckpoint + "_logs.json")
 
 
-if __name__ == "__main__":
-
-    # Run parameters
-    parser = argparse.ArgumentParser(description='Trainer')
-    parser.add_argument(
-        '--pathDB', type=str, default="/datasets01/LibriSpeech/022219/train-clean-100/")
-    parser.add_argument('--pathTrain', type=str,
-                        default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/train_split.txt")
-    parser.add_argument('--pathVal', type=str,
-                        default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/test_split.txt")
-    parser.add_argument('--pathPhone', type=str, default=None)
-    parser.add_argument('--hiddenEncoder', type=int, default=512)
-    parser.add_argument('--hiddenGar', type=int, default=256)
-    parser.add_argument('--nPredicts', type=int, default=12)
-    parser.add_argument('--negativeSamplingExt', type=int, default=128)
-    parser.add_argument('--supervised', action='store_true')
-    parser.add_argument('--eval', action='store_true')
-    parser.add_argument('--load', type=str, default="")
-    parser.add_argument('--learningRate', type=float, default=2e-4)
-    parser.add_argument('--pathCheckpoint', type=str, default=None)
-    parser.add_argument('--sizeWindow', type=int, default=20480)
-    parser.add_argument('--nEpoch', type=int, default=10)
-    parser.add_argument('--schedulerStep', type=int,
-                        default=0)
-    parser.add_argument('--groupSize', type=int, default=2)
-    parser.add_argument('--samplingType', type=str, default='speaker',
-                        choices=['speaker', 'uniform',
-                                 'sequence', 'sequential'])
-    parser.add_argument('--nGPU', type=int, default=-1)
-    parser.add_argument('--batchSizeGPU', type=int, default=8)
-    parser.add_argument('--debug', action='store_true')
-
-    args = parser.parse_args()
-
+def main(args):
     print(f'CONFIG:\n{json.dumps(vars(args), indent=4, sort_keys=True)}')
     print('-' * 50)
     # Datasets
@@ -333,3 +301,43 @@ if __name__ == "__main__":
         args.pathCheckpoint,
         optimizer,
         scheduler)
+
+
+def parseArgs(argv):
+    # Run parameters
+    parser = argparse.ArgumentParser(description='Trainer')
+    parser.add_argument(
+        '--pathDB', type=str, default="/datasets01/LibriSpeech/022219/train-clean-100/")
+    parser.add_argument('--pathTrain', type=str,
+                        default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/train_split.txt")
+    parser.add_argument('--pathVal', type=str,
+                        default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/test_split.txt")
+    parser.add_argument('--pathPhone', type=str, default=None)
+    parser.add_argument('--hiddenEncoder', type=int, default=512)
+    parser.add_argument('--hiddenGar', type=int, default=256)
+    parser.add_argument('--nPredicts', type=int, default=12)
+    parser.add_argument('--negativeSamplingExt', type=int, default=128)
+    parser.add_argument('--supervised', action='store_true')
+    parser.add_argument('--eval', action='store_true')
+    parser.add_argument('--load', type=str, default="")
+    parser.add_argument('--learningRate', type=float, default=2e-4)
+    parser.add_argument('--pathCheckpoint', type=str, default=None)
+    parser.add_argument('--sizeWindow', type=int, default=20480)
+    parser.add_argument('--nEpoch', type=int, default=10)
+    parser.add_argument('--schedulerStep', type=int,
+                        default=0)
+    parser.add_argument('--groupSize', type=int, default=2)
+    parser.add_argument('--samplingType', type=str, default='speaker',
+                        choices=['speaker', 'uniform',
+                                 'sequence', 'sequential'])
+    parser.add_argument('--nGPU', type=int, default=-1)
+    parser.add_argument('--batchSizeGPU', type=int, default=8)
+    parser.add_argument('--debug', action='store_true')
+
+    return parser.parse_args(argv)
+
+
+if __name__ == "__main__":
+
+    args = parseArgs(sys.argv[1:])
+    main(args)
