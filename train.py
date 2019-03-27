@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 from random import shuffle
+import sys
 
 import numpy as np
 import torch
@@ -37,9 +38,27 @@ def saveLogs(data, pathLogs):
     with open(pathLogs, 'w') as file:
         json.dump(data, file, indent=2)
 
+
 def loadArgs(args, locArgs):
     for k, v in locArgs.items():
         setattr(args, k, v)
+
+
+def getCheckpointData(pathDir):
+    checkpoints = [x for x in os.listdir(pathDir)
+                   if os.path.splitext(x)[1] == '.pt']
+    if len(checkpoints) == 0:
+        print("No checkpoints found at " + pathDir)
+        return None
+    checkpoints.sort(key = lambda x : int(os.path.splitext(x[11:])[0]))
+    data = os.path.join(pathDir, checkpoints[-1])
+    with open(os.path.join(pathDir, 'checkpoint_logs.json'), 'rb') as file:
+        logs = json.load(file)
+
+    with open(os.path.join(pathDir, 'checkpoint_args.json'), 'rb') as file:
+        args = json.load(file)
+
+    return data, logs, args
 
 
 def findAllSeqs(dirName,
@@ -71,16 +90,8 @@ def findAllSeqs(dirName,
 
 def filterSeqs(pathTxt, allSeqs):
     inSeqs = [p.replace('\n', '') for p in open(pathTxt, 'r').readlines()]
-    return [ x for x in allSeqs if os.path.splitext(os.path.basename(x[1]))[0] in inSeqs]
-
-
-def parseTxtSplit(pathTxt, extension):
-    data = [p.replace('\n', '') for p in open(pathTxt, 'r').readlines()]
-    output = []
-    for item in data:
-        speaker, chapter, id = item.split('-')
-        output.append((int(speaker), os.path.join(os.path.join(speaker, chapter), item) + extension))
-    return output
+    return [x for x in allSeqs
+            if os.path.splitext(os.path.basename(x[1]))[0] in inSeqs]
 
 
 def parseSeqLabels(pathLabels):
@@ -107,8 +118,8 @@ def trainStep(dataLoader,
     for step, fulldata in enumerate(dataLoader):
 
         batchData, label = fulldata
-        batchData = batchData.cuda()
-        label = label.cuda()
+        batchData = batchData.cuda(non_blocking=True)
+        label = label.cuda(non_blocking=True)
         cFeature, encodedData = model(batchData)
 
         allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
@@ -142,8 +153,8 @@ def valStep(dataLoader,
 
         batchData, label = fulldata
 
-        batchData = batchData.cuda()
-        label = label.cuda()
+        batchData = batchData.cuda(non_blocking=True)
+        label = label.cuda(non_blocking=True)
         cFeature, encodedData = model(batchData)
 
         allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
@@ -159,22 +170,6 @@ def valStep(dataLoader,
     logs["step"] = step
     updateAndShowLogs("Validation loss:", logs, logs["locLoss_val"].shape[0])
     return logs
-
-
-def getCheckpointData(pathDir):
-    checkpoints = [x for x in os.listdir(pathDir) if os.path.splitext(x)[1] == '.pt']
-    if len(checkpoints) == 0:
-        print("No checkpoints found at " + pathDir)
-        return None
-    checkpoints.sort(key = lambda x : int(os.path.splitext(x[11:])[0]))
-    data = os.path.join(pathDir, checkpoints[-1])
-    with open(os.path.join(pathDir, 'checkpoint_logs.json'), 'rb') as file:
-        logs = json.load(file)
-
-    with open(os.path.join(pathDir, 'checkpoint_args.json'), 'rb') as file:
-        args = json.load(file)
-
-    return data, logs, args
 
 
 def run(trainLoader,
@@ -208,7 +203,8 @@ def run(trainLoader,
 
         logs["epoch"].append(epoch)
 
-        if pathCheckpoint is not None and (epoch % 5 == 0 or epoch == nEpoch-1):
+        if pathCheckpoint is not None \
+                and (epoch % 5 == 0 or epoch == nEpoch-1):
             stateDict = {"gEncoder": cpcModel.module.state_dict(),
                          "cpcCriterion": cpcCriterion.state_dict()}
 
@@ -216,42 +212,9 @@ def run(trainLoader,
             saveLogs(logs, pathCheckpoint + "_logs.json")
 
 
-if __name__ == "__main__":
-
-    # Run parameters
-    parser = argparse.ArgumentParser(description='Trainer')
-    parser.add_argument(
-        '--pathDB', type=str, default="/datasets01/LibriSpeech/022219/train-clean-100/")
-    parser.add_argument('--pathTrain', type=str,
-                            default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/train_split.txt")
-    parser.add_argument('--pathVal', type=str,
-                        default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/test_split.txt")
-    parser.add_argument('--pathPhone', type=str, default=None)
-    parser.add_argument('--hiddenEncoder', type=int, default=512)
-    parser.add_argument('--hiddenGar', type=int, default=256)
-    parser.add_argument('--nPredicts', type=int, default=12)
-    parser.add_argument('--negativeSamplingExt', type=int, default=128)
-    parser.add_argument('--supervised', action='store_true')
-    parser.add_argument('--eval', action='store_true')
-    parser.add_argument('--load', type=str, default="")
-    parser.add_argument('--learningRate', type=float, default=2e-4)
-    parser.add_argument('--pathCheckpoint', type=str, default=None)
-    parser.add_argument('--sizeWindow', type=int, default=20480)
-    parser.add_argument('--nEpoch', type=int, default=10)
-    parser.add_argument('--groupSize', type=int, default=2)
-    parser.add_argument('--samplingType', type=str, default='speaker',
-                        choices=['speaker', 'uniform',
-                                 'sequence', 'sequential'])
-    parser.add_argument('--nGPU', type=int, default=-1)
-    parser.add_argument('--batchSizeGPU', type=int, default=8)
-    parser.add_argument('--debug', action='store_true')
-    parser.add_argument('--oneSeq', action='store_true')
-    parser.add_argument('--excluding', action='store_true')
-    parser.add_argument('--file_extension', type=str, default=".flac")
-    parser.add_argument('--dataset_levels', type=int, default=2)
-    parser.add_argument('--restart', action='store_true')
-
-    args = parser.parse_args()
+def main(args):
+    print(f'CONFIG:\n{json.dumps(vars(args), indent=4, sort_keys=True)}')
+    print('-' * 50)
 
     logs = {"epoch": []}
     if args.pathCheckpoint is not None and os.path.isdir(args.pathCheckpoint)\
@@ -265,6 +228,7 @@ if __name__ == "__main__":
     seqNames = findAllSeqs(args.pathDB,
                            recursionLevel=args.dataset_levels,
                            extension=args.file_extension)
+
     # Datasets
     if args.pathTrain is not None:
         seqTrain = filterSeqs(args.pathTrain, seqNames)
@@ -287,6 +251,7 @@ if __name__ == "__main__":
         print("Loading the phone labels at " + args.pathPhone)
         phoneLabels, nPhones = parseSeqLabels(args.pathPhone)
 
+    print(f'Loading audio data at {args.pathDB}')
     trainDataset = AudioBatchData(args.pathDB,
                                   args.sizeWindow,
                                   seqTrain,
@@ -319,16 +284,15 @@ if __name__ == "__main__":
     if not args.supervised:
         cpcCriterion = CPCUnsupersivedCriterion(args.nPredicts, args.hiddenGar,
                                                 args.hiddenEncoder,
-                                                args.negativeSamplingExt,
-                                                args.oneSeq,
-                                                args.excluding)
+                                                args.negativeSamplingExt)
     elif args.pathPhone is not None:
         cpcCriterion = PhoneCriterion(args.hiddenGar, nPhones)
     else:
         cpcCriterion = SpeakerCriterion(args.hiddenGar,
                                         trainDataset.getNSpeakers())
 
-    cpcCriterion = torch.nn.DataParallel(cpcCriterion, device_ids=range(args.nGPU))
+    cpcCriterion = torch.nn.DataParallel(cpcCriterion,
+                                         device_ids=range(args.nGPU))
     cpcModel.optimize = True
     if args.eval:
         print("Evaluation mode")
@@ -359,13 +323,13 @@ if __name__ == "__main__":
 
     trainLoader = torch.utils.data.DataLoader(trainDataset,
                                               batch_sampler=trainDataset.getSampler(
-                                                  batchSize, args.groupSize,
+                                                  batchSize,
                                                   args.samplingType,
                                                   True),
                                               num_workers=args.nGPU)
     valLoader = torch.utils.data.DataLoader(valDataset,
                                             batch_sampler=valDataset.getSampler(
-                                                batchSize, args.groupSize,
+                                                batchSize,
                                                 args.samplingType, False),
                                             num_workers=args.nGPU)
     run(trainLoader,
@@ -376,3 +340,43 @@ if __name__ == "__main__":
         args.pathCheckpoint,
         optimizer,
         logs)
+
+def parseArgs(argv):
+    # Run parameters
+    parser = argparse.ArgumentParser(description='Trainer')
+    parser.add_argument(
+        '--pathDB', type=str, default="/datasets01/LibriSpeech/022219/train-clean-100/")
+    parser.add_argument('--pathTrain', type=str,
+                            default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/train_split.txt")
+    parser.add_argument('--pathVal', type=str,
+                        default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/test_split.txt")
+    parser.add_argument('--pathPhone', type=str, default=None)
+    parser.add_argument('--hiddenEncoder', type=int, default=512)
+    parser.add_argument('--hiddenGar', type=int, default=256)
+    parser.add_argument('--nPredicts', type=int, default=12)
+    parser.add_argument('--negativeSamplingExt', type=int, default=128)
+    parser.add_argument('--supervised', action='store_true')
+    parser.add_argument('--eval', action='store_true')
+    parser.add_argument('--load', type=str, default="")
+    parser.add_argument('--learningRate', type=float, default=2e-4)
+    parser.add_argument('--pathCheckpoint', type=str, default=None)
+    parser.add_argument('--sizeWindow', type=int, default=20480)
+    parser.add_argument('--nEpoch', type=int, default=200)
+    parser.add_argument('--samplingType', type=str, default='uniform',
+                        choices=['samespeaker', 'uniform',
+                                 'samesequence', 'sequential'])
+    parser.add_argument('--nGPU', type=int, default=-1)
+    parser.add_argument('--batchSizeGPU', type=int, default=8)
+    parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--oneSeq', action='store_true')
+    parser.add_argument('--excluding', action='store_true')
+    parser.add_argument('--file_extension', type=str, default=".flac")
+    parser.add_argument('--dataset_levels', type=int, default=2)
+
+    return parser.parse_args(argv)
+
+
+if __name__ == "__main__":
+
+    args = parseArgs(sys.argv[1:])
+    main(args)

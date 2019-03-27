@@ -1,6 +1,8 @@
 import os
 import random
+import time
 import torch
+from multiprocessing import Pool
 from torch.utils.data import Dataset
 from torch.utils.data.sampler import Sampler, BatchSampler
 
@@ -29,6 +31,7 @@ class AudioBatchData(Dataset):
         self.dbPath = path
         self.sizeWindow = sizeWindow
         self.loadAll(seqNames, phoneLabels)
+        print(f'{self.getNSpeakers()} speakers detected')
 
     def splitSeqTags(seqName):
         path = os.path.normpath(seqName)
@@ -53,17 +56,16 @@ class AudioBatchData(Dataset):
 
         # To accelerate the process a bit
         seqNames.sort()
+        start_time = time.time()
+        with Pool(50) as p:
+            speakersAndSeqs = p.map(self.load, seqNames)
+        print(f'Loaded {len(speakersAndSeqs)} sequences '
+              f'in {time.time() - start_time:.2f} seconds')
 
-        for item in seqNames:
-            speaker, seq = item
-            seqName = os.path.basename(os.path.splitext(seq)[0])
-
+        for speaker, seqName, seq in speakersAndSeqs:
             if len(self.speakers) == 0 or self.speakers[-1] != speaker:
                 self.speakers.append(speaker)
                 self.speakerLabel.append(speakerSize)
-
-            fullPath = os.path.join(self.dbPath, seq)
-            seq = torchaudio.load(fullPath)[0].view(-1)
 
             if phoneLabels is not None:
                 for data in phoneLabels[seqName]:
@@ -77,8 +79,16 @@ class AudioBatchData(Dataset):
             self.seqLabel.append(self.seqLabel[-1] + sizeSeq)
             speakerSize += sizeSeq
 
+
         self.speakerLabel.append(speakerSize)
         self.data = torch.cat(self.data, dim=0)
+
+    def load(self, item):
+        speaker, seq = item
+        seqName = os.path.basename(os.path.splitext(seq)[0])
+        fullPath = os.path.join(self.dbPath, seq)
+        seq = torchaudio.load(fullPath)[0].view(-1)
+        return speaker, seqName, seq
 
     def getPhonem(self, idx):
         idPhone = idx // self.phoneSize
@@ -109,7 +119,7 @@ class AudioBatchData(Dataset):
     def getNSeqs(self):
         return len(self.seqLabel) - 1
 
-    def getSampler(self, batchSize, groupSize, type, offset):
+    def getSampler(self, batchSize, type, offset):
         r"""
         Get a batch sampler for the current dataset.
         Args:
@@ -126,13 +136,12 @@ class AudioBatchData(Dataset):
             - offset (bool): if True add a random offset to the sampler at the
                             begining of each iteration
         """
-        if type == "speaker":
-            return AudioBatchSampler(batchSize, groupSize,
-                                     self.speakerLabel, self.sizeWindow,
-                                     offset)
-        if type == "sequence":
-            return AudioBatchSampler(batchSize, groupSize,
-                                     self.seqLabel, self.sizeWindow, offset)
+        if type == "samespeaker":
+            return SameSpeakerSampler(batchSize, self.speakerLabel,
+                                      self.sizeWindow, offset)
+        if type == "samesequence":
+            return SameSpeakerSampler(batchSize, self.seqLabel,
+                                      self.sizeWindow, offset)
         if type == "sequential":
             return SequentialSampler(len(self.data), self.sizeWindow,
                                      offset, batchSize)
@@ -183,30 +192,18 @@ class SequentialSampler(Sampler):
         return self.len
 
 
-class AudioBatchSampler(Sampler):
-    r"""
-    A batch sampler producing mini-batch where items can be divided in groups
-    of same label. At each iteration, the sampler will return a vector of
-    indices:
-    [a1, a2, .., ak, b1, ..., bk, ...]
+class SameSpeakerSampler(Sampler):
 
-    Where the dataset elements ai share the same label a.
-
-    Note:
-        - you can have several groups with the same label in the same minibatch
-        (because input labels are not necessary envenly represented)
-        - if batchSize % k != 0 then the last group will have size
-        (-batchSize) % k
-    """
     def __init__(self,
                  batchSize,
-                 groupSize,             # k
-                 samplingIntervals,     # ex: AudioBatchData.speakerLabel
-                 sizeWindow,            # see AudioBatchData.sizeWindow
-                 offset):               # (bool) random offset ?
+                 samplingIntervals,
+                 sizeWindow,
+                 offset):
 
         self.samplingIntervals = samplingIntervals
         self.sizeWindow = sizeWindow
+        self.batchSize = batchSize
+        self.offset = offset
 
         if self.samplingIntervals[0] != 0:
             raise AttributeError("Sampling intervals should start at zero")
@@ -215,42 +212,35 @@ class AudioBatchSampler(Sampler):
         self.sizeSamplers = [(self.samplingIntervals[i+1] -
                               self.samplingIntervals[i]) // self.sizeWindow
                              for i in range(nWindows)]
-        self.batchSize = batchSize
-        self.groupSize = groupSize
-        self.offset = offset
-        if offset:
+
+        if self.offset:
             self.sizeSamplers = [x - 1 for x in self.sizeSamplers]
 
-    def __iter__(self):
-        batch = []
-        order = [[x, i] for i, x in enumerate(self.sizeSamplers)]
-        samplers = [torch.randperm(s) for s in self.sizeSamplers]
-        offset = random.randint(0, self.sizeWindow // 2) if self.offset else 0
-        nSamplers = len(order)
-        oneSeq = self.batchSize == self.groupSize
-        while nSamplers > 0:
-            w = random.choices(range(nSamplers), [x[0] for x in order])[0]
-            shift = min(self.groupSize, order[w][0])
-            shift = min(shift, self.batchSize - len(batch))
-            indexSampler, nInterval = order[w]
-            for p in range(shift):
-                indexInInterval = samplers[nInterval][
-                    self.sizeSamplers[nInterval]-indexSampler].item()
-                batch.append(self.getIndex(indexInInterval, nInterval, offset))
-                indexSampler += 1
-            order[w][0] -= shift
-            if order[w][0] == 0:
-                del order[w]
-                nSamplers -= 1
-            if len(batch) == self.batchSize or oneSeq and shift > 0:
-                yield batch
-                batch = []
-
-    def getSpeakerMaxSize(self, idx):
-        return self.sizeSamplers[idx]
+    def __len__(self):
+        return sum(self.sizeSamplers) // self.batchSize
 
     def getIndex(self, x, iInterval, offset):
         return offset + x * self.sizeWindow + self.samplingIntervals[iInterval]
 
-    def __len__(self):
-        return sum(self.sizeSamplers) // self.batchSize
+    def __iter__(self):
+        order = [[x, 0] for x in range(len(self.sizeSamplers))]
+        offset = random.randint(0, self.sizeWindow // 2) if self.offset else 0
+        samplers = [torch.randperm(s) for s in self.sizeSamplers]
+        nSamplers = len(order)
+
+        while nSamplers > 0:
+            batch = []
+            key = random.choices(range(nSamplers))[0]
+            indexSampler, nextIndex = order[key]
+            remainingItems = self.sizeSamplers[indexSampler] - nextIndex
+            toTake = min(remainingItems, self.batchSize)
+            for p in range(toTake):
+                indexInSampler = samplers[indexSampler][nextIndex]
+                batch.append(self.getIndex(indexInSampler,
+                                           indexSampler, offset))
+                nextIndex += 1
+            order[key][1] = nextIndex
+            if order[key][1] == self.sizeSamplers[indexSampler]:
+                del order[key]
+            nSamplers -= toTake
+            yield batch
