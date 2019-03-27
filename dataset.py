@@ -30,9 +30,9 @@ class AudioBatchData(Dataset):
         self.sizeWindow = sizeWindow
         self.loadAll(seqNames, phoneLabels)
 
-    def parseSeqName(name):
-        speaker, chapter, id = name.split('-')
-        return speaker, chapter, id
+    def splitSeqTags(seqName):
+        path = os.path.normpath(seqName)
+        return path.split(os.sep)
 
     def loadAll(self, seqNames, phoneLabels):
 
@@ -54,25 +54,21 @@ class AudioBatchData(Dataset):
         # To accelerate the process a bit
         seqNames.sort()
 
-        for seq in seqNames:
-            seqName = os.path.splitext(seq)[0]
-            speaker, chapter, id = \
-                AudioBatchData.parseSeqName(seqName)
+        for item in seqNames:
+            speaker, seq = item
+            seqName = os.path.basename(os.path.splitext(seq)[0])
 
             if len(self.speakers) == 0 or self.speakers[-1] != speaker:
                 self.speakers.append(speaker)
                 self.speakerLabel.append(speakerSize)
 
-            fullPath = os.path.join(self.dbPath,
-                                    os.path.join(speaker,
-                                                 os.path.join(chapter, seq)))
-
+            fullPath = os.path.join(self.dbPath, seq)
             seq = torchaudio.load(fullPath)[0].view(-1)
 
             if phoneLabels is not None:
                 for data in phoneLabels[seqName]:
                     self.phoneLabels.append(data)
-                newSize = len(phoneLabels[seqName]) * (self.phoneSize)
+                newSize = len(phoneLabels[seqName]) * self.phoneSize
                 assert(seq.size(0) >= newSize)
                 seq = seq[:newSize]
 
