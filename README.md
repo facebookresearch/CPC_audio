@@ -20,10 +20,10 @@ python train.py --pathDB $PATH_TO_LIBRISPEECH_DB --pathCheckpoint $PATH_CHECKPOI
 Speaker separability:
 
 ```bash
-python train.py --pathDB $PATH_TO_LIBRISPEECH_DB --pathCheckpoint $PATH_CHECKPOINT --supervised --eval
+python train.py --pathDB $PATH_TO_LIBRISPEECH_DB --pathCheckpoint $PATH_CHECKPOINT --supervised --eval --load $CHECKPOINT_TO_LOAD
 ```
 
 Phone separability:
 ```bash
-python train.py --pathDB $PATH_TO_LIBRISPEECH_DB --pathCheckpoint $PATH_CHECKPOINT --supervised --eval --pathPhone $PATH_TO_PHONE_LABELS
+python train.py --pathDB $PATH_TO_LIBRISPEECH_DB --pathCheckpoint $PATH_CHECKPOINT --supervised --eval --pathPhone $PATH_TO_PHONE_LABELS --load $CHECKPOINT_TO_LOAD
 ```

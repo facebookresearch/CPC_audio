@@ -51,8 +51,8 @@ class CPCUnsupersivedCriterion(nn.Module):
         batchSize, nNegativeExt, dimEncoded = encodedData.size()
         outputs = []
 
-        # Draw nNegativeExt * batchSize negative samples anywhere in the batch
         negExt = encodedData.view(-1, dimEncoded)
+        # Draw nNegativeExt * batchSize negative samples anywhere in the batch
         extIdx = np.random.randint(0, nNegativeExt * batchSize,
                                    size=(self.negativeSamplingExt
                                          * windowSize * batchSize))
@@ -70,7 +70,6 @@ class CPCUnsupersivedCriterion(nn.Module):
                 posSeq = encodedData[:, k:-(self.nPredicts-k)]
             else:
                 posSeq = encodedData[:, k:]
-
             posSeq = posSeq.view(batchSize, 1, posSeq.size(1), dimEncoded)
             fullSeq = torch.cat((posSeq, negExt), dim=1)
             outputs.append(fullSeq)
