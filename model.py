@@ -41,12 +41,13 @@ class AutoregressiveNetwork(nn.Module):
     def __init__(self,
                  dimEncoded,
                  dimOutput,
-                 keepHidden):
+                 keepHidden,
+                 nLevelsGRU):
 
         super(AutoregressiveNetwork, self).__init__()
 
         self.baseNet = nn.GRU(dimEncoded, dimOutput,
-                              num_layers=1, batch_first=True)
+                              num_layers=nLevelsGRU, batch_first=True)
         self.hidden = None
         self.keepHidden = keepHidden
 
@@ -70,11 +71,13 @@ class CPCModel(nn.Module):
     def __init__(self,
                  dimEncoded,
                  dimAR,
-                 keepHidden):
+                 keepHidden,
+                 nLevelsGRU):
 
         super(CPCModel, self).__init__()
         self.gEncoder = EncoderNetwork(dimEncoded)
-        self.gAR = AutoregressiveNetwork(dimEncoded, dimAR, keepHidden)
+        self.gAR = AutoregressiveNetwork(dimEncoded, dimAR,
+                                         keepHidden, nLevelsGRU)
 
     def forward(self, batchData):
         encodedData = self.gEncoder(batchData).permute(0, 2, 1)

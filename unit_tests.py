@@ -1,7 +1,7 @@
 import unittest
 import torch
 from train import findAllSeqs, filterSeqs
-from dataset import SameSpeakerSampler, AudioBatchData
+from dataset import AudioBatchData
 from nose.tools import eq_
 
 
@@ -21,39 +21,55 @@ class TestDataLoader(unittest.TestCase):
 
         self.pathDB = "/datasets01/LibriSpeech/022219/train-clean-100/"
         self.sizeWindow = 20480
+        self.speakerList = list(set([x[0] for x in self.seqNames]))
 
     def testLoadData(self):
 
         testData = AudioBatchData(self.pathDB, self.sizeWindow,
-                                  self.seqNames, None)
+                                  self.seqNames, None, self.speakerList)
         assert(testData.getNSpeakers() == 9)
         assert(testData.getNSeqs() == 9)
+
 
     def testDataLoader(self):
 
         batchSize = 16
-        groupSize = 4
         pathSeqs = "/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/test_split.txt"
-        seqNames = findAllSeqs(self.pathDB, recursionLevel=2, extension=".flac")
+        seqNames, speakers = findAllSeqs(self.pathDB, recursionLevel=2,
+                                         extension=".flac")
         seqNames = filterSeqs(pathSeqs, seqNames)
 
-        testData = AudioBatchData(self.pathDB, self.sizeWindow, seqNames, None)
+        testData = AudioBatchData(self.pathDB, self.sizeWindow, seqNames,
+                                  None, list(speakers))
 
         # Check the number of speakers
         nSpeaker = testData.getNSpeakers()
         eq_(nSpeaker, 251)
-        testSampler = testData.getSampler(
-            batchSize, "samespeaker", True)
-        testDataLoader = torch.utils.data.DataLoader(testData,
-                                                     batch_sampler=testSampler,
-                                                     num_workers=2)
-
+        testDataLoader = testData.getDataLoader(batchSize, "samespeaker",
+                                                True, numWorkers=2)
         for index, item in enumerate(testDataLoader):
-
             _, labels = item
             p = labels[0].item()
-            print(labels)
             eq_(torch.sum(labels == p), labels.size(0))
+
+    def testPartialLoader(self):
+
+        batchSize = 16
+        testData = AudioBatchData(self.pathDB, self.sizeWindow,
+                                  self.seqNames, None, self.speakerList,
+                                  MAX_SIZE_LOADED=900000,
+                                  GROUP_SIZE_LOADED=2)
+        eq_(testData.getNPacks(), 2)
+        testDataLoader = testData.getDataLoader(batchSize, "samespeaker",
+                                                True, numWorkers=2)
+        vistedLabels = set([])
+        for index, item in enumerate(testDataLoader):
+            _, labels = item
+            p = labels[0].item()
+            eq_(torch.sum(labels == p), labels.size(0))
+            vistedLabels.add(p)
+
+        eq_(set(range(len(self.speakerList))), vistedLabels)
 
 
 class TestPhonemParser(unittest.TestCase):
@@ -76,9 +92,10 @@ class TestPhonemParser(unittest.TestCase):
         sizeWindow = 640
         seqNames = [(4051, '4051/11218/4051-11218-0044.flac'),
                     (2911, '2911/12359/2911-12359-0007.flac')]
+        speakers = list(set([x[0] for x in seqNames]))
         phoneData, _ = self.seqLoader(self.pathPhone)
         pathDB = "/datasets01/LibriSpeech/022219/train-clean-100/"
-        testData = AudioBatchData(pathDB, sizeWindow, seqNames, phoneData)
+        testData = AudioBatchData(pathDB, sizeWindow, seqNames, phoneData, speakers)
         eq_(testData.getPhonem(81280), [0, 0, 0, 0])
         eq_(testData.getPhonem(84841), [0, 0, 0, 18])
         eq_(testData.getPhonem(88201), [14, 14, 14, 14])

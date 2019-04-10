@@ -2,8 +2,9 @@ import os
 import random
 import time
 import torch
-from multiprocessing import Pool
-from torch.utils.data import Dataset
+from copy import deepcopy
+from torch.multiprocessing import Pool, Lock, Manager
+from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import Sampler, BatchSampler
 
 import torchaudio
@@ -15,7 +16,10 @@ class AudioBatchData(Dataset):
                  path,
                  sizeWindow,
                  seqNames,
-                 phoneLabels):
+                 phoneLabelsDict,
+                 speakerList,
+                 MAX_SIZE_LOADED=5000000000,
+                 GROUP_SIZE_LOADED=2000):
         """
         Args:
             - path (string): path to the training dataset
@@ -28,67 +32,148 @@ class AudioBatchData(Dataset):
                                          "$SEQ_NAME": list of phonem labels for
                                          the sequence $SEQ_NAME
         """
+        self.MAX_SIZE_LOADED = MAX_SIZE_LOADED
+        self.GROUP_SIZE_LOADED = GROUP_SIZE_LOADED
         self.dbPath = path
         self.sizeWindow = sizeWindow
-        self.loadAll(seqNames, phoneLabels)
-        print(f'{self.getNSpeakers()} speakers detected')
+        self.seqNames = deepcopy(seqNames)
+        self.prepare()
+        self.speakers = deepcopy(speakerList)
+        self.speakers.sort()
+        self.data = []
+
+        self.phoneSize = 0 if phoneLabelsDict is None else \
+            phoneLabelsDict["step"]
+        self.phoneStep = 0 if phoneLabelsDict is None else \
+            self.sizeWindow // self.phoneSize
+
+        self.phoneLabelsDict = deepcopy(phoneLabelsDict)
+        self.loadNextPack()
 
     def splitSeqTags(seqName):
         path = os.path.normpath(seqName)
         return path.split(os.sep)
 
-    def loadAll(self, seqNames, phoneLabels):
+    def clear(self):
+        if 'data' in self.__dict__:
+            del self.data
+        if 'speakerLabel' in self.__dict__:
+            del self.speakerLabel
+        if 'phoneLabels' in self.__dict__:
+            del self.phoneLabels
+        if 'seqLabel' in self.__dict__:
+            del self.seqLabel
 
-        # Speakers
-        self.speakers = []
+    def prepare(self, poolSize=50):
+
+        nSeqs = len(self.seqNames)
+        index = 0
+        self.packageIndex = []
+        self.totSize = 0
+        random.shuffle(self.seqNames)
+        start_time = time.time()
+
+        while index < nSeqs:
+            packageLength = 0
+            startIndex = index
+            while packageLength < self.MAX_SIZE_LOADED:
+                maxIndex = min(index + self.GROUP_SIZE_LOADED, nSeqs)
+                with Pool(poolSize) as p:
+                    lenghtInfo = p.map(self.checkLength,
+                                       self.seqNames[index:maxIndex])
+                packageLength += sum([l_ for l_ in lenghtInfo])
+                index += self.GROUP_SIZE_LOADED
+                if index > nSeqs:
+                    break
+            self.totSize += packageLength
+            self.packageIndex.append((startIndex, min(index, nSeqs)))
+
+        print(f'Scanned {len(self.seqNames)} sequences '
+              f'in {time.time() - start_time:.2f} seconds')
+        self.currentPack = -1
+
+    def getNPacks(self):
+        return len(self.packageIndex)
+
+    def loadNextPack(self):
+        self.currentPack += 1
+        self.currentPack = self.currentPack % len(self.packageIndex)
+        seqStart, seqEnd = self.packageIndex[self.currentPack]
+        self.clear()
+        self.loadAll(self.seqNames[seqStart:seqEnd])
+
+    def loadAll(self, seqNames):
 
         # Labels
-        self.speakerLabel = []
+        self.speakerLabel = [0]
         self.seqLabel = [0]
         self.phoneLabels = []
         speakerSize = 0
-        self.phoneSize = 0 if phoneLabels is None else phoneLabels["step"]
-        self.phoneStep = 0 if phoneLabels is None else \
-            self.sizeWindow // self.phoneSize
+        indexSpeaker = 0
 
         # Data
-        self.data = []
+        nprocess = min(50, len(seqNames))
+        sliceSize = len(seqNames) // nprocess
+        mutex = Lock()
+
+        def load(index, pool):
+            indexStart = sliceSize * index
+            indexEnd = min(len(seqNames), indexStart + sliceSize)
+            for index in range(indexStart, indexEnd):
+                speaker, seq = seqNames[index]
+                seqName = os.path.basename(os.path.splitext(seq)[0])
+                fullPath = os.path.join(self.dbPath, seq)
+                seq = torchaudio.load(fullPath)[0].view(-1)
+                mutex.acquire()
+                pool.append((speaker, seqName, seq))
+                mutex.release()
+
+        processes = []
+        manager = Manager()
+        pool = manager.list()
+        for rank in range(nprocess):
+            p = torch.multiprocessing.Process(target=load, args=(rank, pool))
+            p.start()
+            processes.append(p)
+        for p in processes:
+            p.join()
 
         # To accelerate the process a bit
-        seqNames.sort()
+        pool.sort()
+        tmpData = []
         start_time = time.time()
-        with Pool(50) as p:
-            speakersAndSeqs = p.map(self.load, seqNames)
-        print(f'Loaded {len(speakersAndSeqs)} sequences '
-              f'in {time.time() - start_time:.2f} seconds')
 
-        for speaker, seqName, seq in speakersAndSeqs:
-            if len(self.speakers) == 0 or self.speakers[-1] != speaker:
-                self.speakers.append(speaker)
+        for speaker, seqName, seq in pool:
+            while self.speakers[indexSpeaker] < speaker:
+                indexSpeaker += 1
                 self.speakerLabel.append(speakerSize)
+            if self.speakers[indexSpeaker] != speaker:
+                raise ValueError(f'{speaker} invalid speaker')
 
-            if phoneLabels is not None:
-                for data in phoneLabels[seqName]:
+            if self.phoneLabelsDict is not None:
+                for data in self.phoneLabelsDict[seqName]:
                     self.phoneLabels.append(data)
-                newSize = len(phoneLabels[seqName]) * self.phoneSize
+                newSize = len(self.phoneLabelsDict[seqName]) * self.phoneSize
                 assert(seq.size(0) >= newSize)
                 seq = seq[:newSize]
 
             sizeSeq = seq.size(0)
-            self.data.append(seq)
+            tmpData.append(seq)
             self.seqLabel.append(self.seqLabel[-1] + sizeSeq)
             speakerSize += sizeSeq
-
+            del seq
 
         self.speakerLabel.append(speakerSize)
-        self.data = torch.cat(self.data, dim=0)
+        self.data = torch.cat(tmpData, dim=0)
+        print(f'Loaded {len(seqNames)} sequences '
+              f'in {time.time() - start_time:.2f} seconds')
 
-    def load(self, item):
-        speaker, seq = item
-        seqName = os.path.basename(os.path.splitext(seq)[0])
+    def checkLength(self, item):
+        _, seq = item
         fullPath = os.path.join(self.dbPath, seq)
-        seq = torchaudio.load(fullPath)[0].view(-1)
-        return speaker, seqName, seq
+        info = torchaudio.info(fullPath)[0]
+        # Lenght in second of the sequence
+        return info.length
 
     def getPhonem(self, idx):
         idPhone = idx // self.phoneSize
@@ -100,15 +185,17 @@ class AudioBatchData(Dataset):
         return idSpeaker
 
     def __len__(self):
-        return len(self.data) // self.sizeWindow
+        return self.totSize // self.sizeWindow
 
     def __getitem__(self, idx):
+
+        if idx < 0 or idx >= len(self.data) - self.sizeWindow - 1:
+            print(idx)
 
         if self.phoneSize > 0:
             label = torch.tensor(self.getPhonem(idx), dtype=torch.long)
         else:
-            label = torch.tensor(
-                self.getSpeakerLabel(idx), dtype=torch.long)
+            label = torch.tensor(self.getSpeakerLabel(idx), dtype=torch.long)
 
         outData = self.data[idx:(self.sizeWindow + idx)].view(1, -1)
         return outData, label
@@ -119,7 +206,21 @@ class AudioBatchData(Dataset):
     def getNSeqs(self):
         return len(self.seqLabel) - 1
 
-    def getSampler(self, batchSize, type, offset):
+    def getBaseSampler(self, type, batchSize, offset):
+        if type == "samespeaker":
+            return SameSpeakerSampler(batchSize, self.speakerLabel,
+                                      self.sizeWindow, offset)
+        if type == "samesequence":
+            return SameSpeakerSampler(batchSize, self.seqLabel,
+                                      self.sizeWindow, offset)
+        if type == "sequential":
+            return SequentialSampler(len(self.data), self.sizeWindow,
+                                     offset, batchSize)
+        sampler = UniformAudioSampler(len(self.data), self.sizeWindow,
+                                      offset)
+        return BatchSampler(sampler, batchSize, True)
+
+    def getDataLoader(self, batchSize, type, randomOffset, numWorkers=0):
         r"""
         Get a batch sampler for the current dataset.
         Args:
@@ -133,23 +234,52 @@ class AudioBatchData(Dataset):
                 type == "sequential": sequential sampling
                 else: uniform random sampling of the full audio
                 vector
-            - offset (bool): if True add a random offset to the sampler at the
-                            begining of each iteration
+            - randomOffset (bool): if True add a random offset to the sampler
+                                   at the begining of each iteration
         """
-        if type == "samespeaker":
-            return SameSpeakerSampler(batchSize, self.speakerLabel,
-                                      self.sizeWindow, offset)
-        if type == "samesequence":
-            return SameSpeakerSampler(batchSize, self.seqLabel,
-                                      self.sizeWindow, offset)
-        if type == "sequential":
-            return SequentialSampler(len(self.data), self.sizeWindow,
-                                     offset, batchSize)
-        sampler = RandomAudioSampler(len(self.data), self.sizeWindow, offset)
-        return BatchSampler(sampler, batchSize, True)
+        def samplerCall():
+            offset = random.randint(0, self.sizeWindow // 2) \
+                     if randomOffset else 0
+            return self.getBaseSampler(type, batchSize, offset)
+
+        return AudioLoader(self, samplerCall, len(self.packageIndex),
+                           self.loadNextPack, self.__len__() // batchSize,
+                           numWorkers)
 
 
-class RandomAudioSampler(Sampler):
+class AudioLoader(object):
+
+    def __init__(self,
+                 dataset,
+                 samplerCall,
+                 nLoop,
+                 updateCall,
+                 size,
+                 numWorkers):
+        self.samplerCall = samplerCall
+        self.updateCall = updateCall
+        self.nLoop = nLoop
+        self.size = size
+        self.dataset = dataset
+        self.numWorkers = numWorkers
+
+    def __len__(self):
+        return self.size
+
+    def __iter__(self):
+
+        for i in range(self.nLoop):
+            sampler = self.samplerCall()
+            dataloader = DataLoader(self.dataset,
+                                    batch_sampler=sampler,
+                                    num_workers=self.numWorkers)
+            for x in dataloader:
+                yield x
+            if i < self.nLoop - 1:
+                self.updateCall()
+
+
+class UniformAudioSampler(Sampler):
 
     def __init__(self,
                  dataSize,
@@ -159,10 +289,11 @@ class RandomAudioSampler(Sampler):
         self.len = dataSize // sizeWindow
         self.sizeWindow = sizeWindow
         self.offset = offset
+        if self.offset > 0:
+            self.len -= 1
 
     def __iter__(self):
-        offset = random.randint(0, self.sizeWindow // 2) if self.offset else 0
-        return iter((offset
+        return iter((self.offset
                     + self.sizeWindow * torch.randperm(self.len)).tolist())
 
     def __len__(self):
@@ -179,13 +310,12 @@ class SequentialSampler(Sampler):
         self.startBatches = [x * (dataSize // batchSize)
                              for x in range(batchSize)]
         self.batchSize = batchSize
-        if offset:
+        if self.offset > 0:
             self.len -= 1
 
     def __iter__(self):
-        offset = random.randint(0, self.sizeWindow) if self.offset else 0
         for idx in range(self.len):
-            yield [offset + self.sizeWindow * idx
+            yield [self.offset + self.sizeWindow * idx
                    + start for start in self.startBatches]
 
     def __len__(self):
@@ -213,34 +343,30 @@ class SameSpeakerSampler(Sampler):
                               self.samplingIntervals[i]) // self.sizeWindow
                              for i in range(nWindows)]
 
-        if self.offset:
-            self.sizeSamplers = [x - 1 for x in self.sizeSamplers]
+        if self.offset > 0:
+            self.sizeSamplers = [max(0, x - 1) for x in self.sizeSamplers]
+
+        order = [(x, torch.randperm(val).tolist())
+                 for x, val in enumerate(self.sizeSamplers) if val > 0]
+
+        # Build Batches
+        self.batches = []
+        for indexSampler, randperm in order:
+            indexStart, sizeSampler = 0, self.sizeSamplers[indexSampler]
+            while indexStart < sizeSampler:
+                indexEnd = min(sizeSampler, indexStart + self.batchSize)
+                locBatch = [self.getIndex(x, indexSampler)
+                            for x in randperm[indexStart:indexEnd]]
+                indexStart = indexEnd
+                self.batches.append(locBatch)
 
     def __len__(self):
-        return sum(self.sizeSamplers) // self.batchSize
+        return len(self.batches)
 
-    def getIndex(self, x, iInterval, offset):
-        return offset + x * self.sizeWindow + self.samplingIntervals[iInterval]
+    def getIndex(self, x, iInterval):
+        return self.offset + x * self.sizeWindow \
+               + self.samplingIntervals[iInterval]
 
     def __iter__(self):
-        order = [[x, 0] for x in range(len(self.sizeSamplers))]
-        offset = random.randint(0, self.sizeWindow // 2) if self.offset else 0
-        samplers = [torch.randperm(s) for s in self.sizeSamplers]
-        nSamplers = len(order)
-
-        while nSamplers > 0:
-            batch = []
-            key = random.choices(range(nSamplers))[0]
-            indexSampler, nextIndex = order[key]
-            remainingItems = self.sizeSamplers[indexSampler] - nextIndex
-            toTake = min(remainingItems, self.batchSize)
-            for p in range(toTake):
-                indexInSampler = samplers[indexSampler][nextIndex]
-                batch.append(self.getIndex(indexInSampler,
-                                           indexSampler, offset))
-                nextIndex += 1
-            order[key][1] = nextIndex
-            if order[key][1] == self.sizeSamplers[indexSampler]:
-                del order[key]
-            nSamplers -= toTake
-            yield batch
+        random.shuffle(self.batches)
+        return iter(self.batches)

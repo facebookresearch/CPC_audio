@@ -11,6 +11,7 @@ from dataset import AudioBatchData
 from model import CPCModel
 from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, \
                       PhoneCriterion
+import psutil
 
 
 def updateAndShowLogs(text, logs, nPredicts):
@@ -39,18 +40,29 @@ def saveLogs(data, pathLogs):
         json.dump(data, file, indent=2)
 
 
-def loadArgs(args, locArgs):
+def loadArgs(args, locArgs, forbiddenAttr=None):
     for k, v in locArgs.items():
-        setattr(args, k, v)
+        if forbiddenAttr is not None:
+            if k not in forbiddenAttr:
+                setattr(args, k, v)
+        else:
+            setattr(args, k, v)
+
+
+def transferArgs(args, locArgs, toTransfer):
+    for key in toTransfer:
+        setattr(args, key, locArgs[key])
 
 
 def getCheckpointData(pathDir):
+    if not os.path.isdir(pathDir):
+        return None
     checkpoints = [x for x in os.listdir(pathDir)
                    if os.path.splitext(x)[1] == '.pt']
     if len(checkpoints) == 0:
         print("No checkpoints found at " + pathDir)
         return None
-    checkpoints.sort(key = lambda x : int(os.path.splitext(x[11:])[0]))
+    checkpoints.sort(key=lambda x: int(os.path.splitext(x[11:])[0]))
     data = os.path.join(pathDir, checkpoints[-1])
     with open(os.path.join(pathDir, 'checkpoint_logs.json'), 'rb') as file:
         logs = json.load(file)
@@ -68,6 +80,7 @@ def findAllSeqs(dirName,
     dirName = os.path.join(dirName, '')
     dirList = [dirName]
     prefixSize = len(dirName)
+    speakers = set([])
 
     for recursion in range(recursionLevel):
         nextList = []
@@ -80,18 +93,29 @@ def findAllSeqs(dirName,
     for directory in dirList:
         basePath = directory[prefixSize:]
         speaker = int(os.path.normpath(basePath).split(os.sep)[0])
+        speakers.add(speaker)
         for item in os.listdir(directory):
             if os.path.splitext(item)[1] != extension:
                 continue
             outSequences.append((speaker, os.path.join(basePath, item)))
 
-    return outSequences
+    return outSequences, speakers
 
 
-def filterSeqs(pathTxt, allSeqs):
+def filterSeqs(pathTxt, seqCouples):
     inSeqs = [p.replace('\n', '') for p in open(pathTxt, 'r').readlines()]
-    return [x for x in allSeqs
-            if os.path.splitext(os.path.basename(x[1]))[0] in inSeqs]
+    inSeqs.sort()
+    seqCouples.sort(key=lambda x: x[1])
+    output, index = [], 0
+    for x in seqCouples:
+        seq = os.path.basename(os.path.splitext(x[1])[0])
+        while index < len(inSeqs) and seq > inSeqs[index]:
+            index += 1
+        if index == len(inSeqs):
+            break
+        if seq == inSeqs[index]:
+            output.append(x)
+    return output
 
 
 def parseSeqLabels(pathLabels):
@@ -103,6 +127,12 @@ def parseSeqLabels(pathLabels):
         output[data[0]] = [int(x) for x in data[1:]]
         maxPhone = max(maxPhone, max(output[data[0]]))
     return output, maxPhone + 1
+
+
+def cpuStats():
+    print(sys.version)
+    print(psutil.cpu_percent())
+    print(psutil.virtual_memory())
 
 
 def trainStep(dataLoader,
@@ -126,6 +156,8 @@ def trainStep(dataLoader,
 
         totLoss = allLosses.sum()
         totLoss.backward()
+        torch.nn.utils.clip_grad_norm_(list(model.parameters()),
+                                       1, norm_type='inf')
         optimizer.step()
         optimizer.zero_grad()
 
@@ -181,18 +213,26 @@ def run(trainLoader,
         optimizer,
         logs):
 
-    print("Running %d epochs" % nEpoch)
+    print(f"Running {nEpoch} epochs")
     startEpoch = len(logs["epoch"])
+    bestAcc = 0
+    bestStateDict = None
     for epoch in range(startEpoch, nEpoch):
 
-        print("Starting epoch %d" % epoch)
+        print(f"Starting epoch {epoch}")
         print("Training dataset %d batches, Validation dataset %d batches" %
               (len(trainLoader), len(valLoader)))
+
+        cpuStats()
 
         locLogsTrain = trainStep(
             trainLoader, cpcModel, cpcCriterion, optimizer)
 
         locLogsVal = valStep(valLoader, cpcModel, cpcCriterion)
+
+        currentAccuracy = float(locLogsVal["locAcc_val"].mean())
+        if currentAccuracy > bestAcc:
+            bestStateDict = cpcModel.module.state_dict()
 
         for key, value in dict(locLogsTrain, **locLogsVal).items():
             if key not in logs:
@@ -205,10 +245,13 @@ def run(trainLoader,
 
         if pathCheckpoint is not None \
                 and (epoch % 5 == 0 or epoch == nEpoch-1):
+            print(pathCheckpoint)
             stateDict = {"gEncoder": cpcModel.module.state_dict(),
-                         "cpcCriterion": cpcCriterion.state_dict()}
+                         "cpcCriterion": cpcCriterion.state_dict(),
+                         "optimizer": optimizer.state_dict(),
+                         "best": bestStateDict}
 
-            torch.save(stateDict, pathCheckpoint + "_" + str(epoch) + '.pt')
+            torch.save(stateDict, f"{pathCheckpoint}_{epoch}.pt")
             saveLogs(logs, pathCheckpoint + "_logs.json")
 
 
@@ -216,18 +259,23 @@ def main(args):
     print(f'CONFIG:\n{json.dumps(vars(args), indent=4, sort_keys=True)}')
     print('-' * 50)
 
-    logs = {"epoch": []}
-    if args.pathCheckpoint is not None and os.path.isdir(args.pathCheckpoint)\
-            and not args.restart:
-        checkpointData = getCheckpointData(args.pathCheckpoint)
-        if checkpointData is not None:
-            load, logs, locArgs = checkpointData
-            loadArgs(args, locArgs)
-            args.load = load
+    logs, loadOptimizer = {"epoch": []}, False
+    if args.load is not None:
+        _, _, locArgs = getCheckpointData(os.path.dirname(args.pathCheckpoint))
+        transferArgs(args, locArgs,
+                     ["hiddenEncoder", "hiddenGar", "nLevelsGRU"])
+    if args.pathCheckpoint is not None and not args.restart:
+        cdata = getCheckpointData(args.pathCheckpoint)
+        if cdata is not None:
+            data, logs, locArgs = cdata
+            print(f"Checkpoint detected at {data}")
+            loadArgs(args, locArgs,
+                     forbiddenAttr={"nGPU", "pathCheckpoint", "debug"})
+            args.load, loadOptimizer = data, True
 
-    seqNames = findAllSeqs(args.pathDB,
-                           recursionLevel=args.dataset_levels,
-                           extension=args.file_extension)
+    seqNames, speakers = findAllSeqs(args.pathDB,
+                                     recursionLevel=args.dataset_levels,
+                                     extension=args.file_extension)
 
     # Datasets
     if args.pathTrain is not None:
@@ -255,21 +303,33 @@ def main(args):
     trainDataset = AudioBatchData(args.pathDB,
                                   args.sizeWindow,
                                   seqTrain,
-                                  phoneLabels)
+                                  phoneLabels,
+                                  list(speakers))
 
     valDataset = AudioBatchData(args.pathDB,
                                 args.sizeWindow,
                                 seqVal,
-                                phoneLabels)
+                                phoneLabels,
+                                list(speakers))
 
     # Base Model
-    cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar,
-                        args.samplingType == "sequential")
+    if args.transformer:
+        from transformers import CPCTransformer
+        cpcModel = CPCTransformer(args.hiddenEncoder, args.hiddenGar,
+                                  args.sizeWindow // 160)
+        args.hiddenGar = args.hiddenEncoder
+    else:
+        cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar,
+                            args.samplingType == "sequential",
+                            args.nLevelsGRU)
 
-    if args.load != "":
+    if args.load is not None:
         print("Loading checkpoint " + args.load)
         state_dict = torch.load(args.load)
-        cpcModel.load_state_dict(state_dict["gEncoder"])
+        if args.eval and "best" in state_dict:
+            cpcModel.load_state_dict(state_dict["best"])
+        else:
+            cpcModel.load_state_dict(state_dict["gEncoder"])
 
     if args.nGPU < 0:
         args.nGPU = torch.cuda.device_count()
@@ -289,7 +349,7 @@ def main(args):
         cpcCriterion = PhoneCriterion(args.hiddenGar, nPhones)
     else:
         cpcCriterion = SpeakerCriterion(args.hiddenGar,
-                                        trainDataset.getNSpeakers())
+                                        len(speakers))
 
     cpcCriterion = torch.nn.DataParallel(cpcCriterion,
                                          device_ids=range(args.nGPU))
@@ -313,6 +373,12 @@ def main(args):
 
     optimizer = torch.optim.Adam(g_params, lr=args.learningRate)
 
+    if args.load is not None and loadOptimizer:
+        print("Loading optimizer " + args.load)
+        state_dict = torch.load(args.load)
+        if "optimizer" in state_dict:
+            optimizer.load_state_dict(state_dict["optimizer"])
+
     # Checkpoint
     if args.pathCheckpoint is not None:
         if not os.path.isdir(args.pathCheckpoint):
@@ -321,17 +387,11 @@ def main(args):
         with open(args.pathCheckpoint + "_args.json", 'w') as file:
             json.dump(vars(args), file, indent=2)
 
-    trainLoader = torch.utils.data.DataLoader(trainDataset,
-                                              batch_sampler=trainDataset.getSampler(
-                                                  batchSize,
-                                                  args.samplingType,
-                                                  True),
-                                              num_workers=args.nGPU)
-    valLoader = torch.utils.data.DataLoader(valDataset,
-                                            batch_sampler=valDataset.getSampler(
-                                                batchSize,
-                                                args.samplingType, False),
-                                            num_workers=args.nGPU)
+    trainLoader = trainDataset.getDataLoader(batchSize, args.samplingType,
+                                             not args.disable_offset,
+                                             numWorkers=0)
+    valLoader = valDataset.getDataLoader(batchSize, 'sequential', False,
+                                         numWorkers=0)
     run(trainLoader,
         valLoader,
         cpcModel,
@@ -341,15 +401,15 @@ def main(args):
         optimizer,
         logs)
 
+
 def parseArgs(argv):
     # Run parameters
     parser = argparse.ArgumentParser(description='Trainer')
     parser.add_argument(
-        '--pathDB', type=str, default="/datasets01/LibriSpeech/022219/train-clean-100/")
-    parser.add_argument('--pathTrain', type=str,
-                            default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/train_split.txt")
-    parser.add_argument('--pathVal', type=str,
-                        default="/datasets01/LibriSpeech/022219/LibriSpeech100_labels_split/test_split.txt")
+        '--pathDB', type=str,
+        default="/datasets01/LibriSpeech/022219/train-clean-100/")
+    parser.add_argument('--pathTrain', type=str, default=None)
+    parser.add_argument('--pathVal', type=str, default=None)
     parser.add_argument('--pathPhone', type=str, default=None)
     parser.add_argument('--hiddenEncoder', type=int, default=512)
     parser.add_argument('--hiddenGar', type=int, default=256)
@@ -357,7 +417,7 @@ def parseArgs(argv):
     parser.add_argument('--negativeSamplingExt', type=int, default=128)
     parser.add_argument('--supervised', action='store_true')
     parser.add_argument('--eval', action='store_true')
-    parser.add_argument('--load', type=str, default="")
+    parser.add_argument('--load', type=str, default=None)
     parser.add_argument('--learningRate', type=float, default=2e-4)
     parser.add_argument('--pathCheckpoint', type=str, default=None)
     parser.add_argument('--sizeWindow', type=int, default=20480)
@@ -365,18 +425,18 @@ def parseArgs(argv):
     parser.add_argument('--samplingType', type=str, default='uniform',
                         choices=['samespeaker', 'uniform',
                                  'samesequence', 'sequential'])
+    parser.add_argument('--nLevelsGRU', type=int, default=1)
     parser.add_argument('--nGPU', type=int, default=-1)
     parser.add_argument('--batchSizeGPU', type=int, default=8)
     parser.add_argument('--debug', action='store_true')
-    parser.add_argument('--oneSeq', action='store_true')
-    parser.add_argument('--excluding', action='store_true')
     parser.add_argument('--file_extension', type=str, default=".flac")
     parser.add_argument('--dataset_levels', type=int, default=2)
-
+    parser.add_argument('--disable_offset', action='store_true')
+    parser.add_argument('--restart', action='store_true')
+    parser.add_argument('--transformer', action='store_true')
     return parser.parse_args(argv)
 
 
 if __name__ == "__main__":
-
     args = parseArgs(sys.argv[1:])
     main(args)
