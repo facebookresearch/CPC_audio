@@ -313,15 +313,9 @@ def main(args):
                                 list(speakers))
 
     # Base Model
-    if args.transformer:
-        from transformers import CPCTransformer
-        cpcModel = CPCTransformer(args.hiddenEncoder, args.hiddenGar,
-                                  args.sizeWindow // 160)
-        args.hiddenGar = args.hiddenEncoder
-    else:
-        cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar,
-                            args.samplingType == "sequential",
-                            args.nLevelsGRU)
+    cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar,
+                        args.samplingType == "sequential",
+                        args.nLevelsGRU)
 
     if args.load is not None:
         print("Loading checkpoint " + args.load)
