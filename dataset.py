@@ -64,6 +64,11 @@ class AudioBatchData(Dataset):
         if 'seqLabel' in self.__dict__:
             del self.seqLabel
 
+    def checkLength(self, item):
+        _, seq = item
+        info = torchaudio.info(os.path.join(self.dbPath, seq))[0]
+        return info.length
+
     def prepare(self, poolSize=50):
 
         nSeqs = len(self.seqNames)
@@ -167,13 +172,6 @@ class AudioBatchData(Dataset):
         self.data = torch.cat(tmpData, dim=0)
         print(f'Loaded {len(seqNames)} sequences '
               f'in {time.time() - start_time:.2f} seconds')
-
-    def checkLength(self, item):
-        _, seq = item
-        fullPath = os.path.join(self.dbPath, seq)
-        info = torchaudio.info(fullPath)[0]
-        # Lenght in second of the sequence
-        return info.length
 
     def getPhonem(self, idx):
         idPhone = idx // self.phoneSize

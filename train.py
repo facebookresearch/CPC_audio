@@ -156,8 +156,9 @@ def trainStep(dataLoader,
 
         totLoss = allLosses.sum()
         totLoss.backward()
-        torch.nn.utils.clip_grad_norm_(list(model.parameters()),
-                                       1, norm_type='inf')
+        if model.optimize:
+            torch.nn.utils.clip_grad_norm_(list(model.parameters()),
+                                           1, norm_type=2)
         optimizer.step()
         optimizer.zero_grad()
 
@@ -261,16 +262,16 @@ def main(args):
 
     logs, loadOptimizer = {"epoch": []}, False
     if args.load is not None:
-        _, _, locArgs = getCheckpointData(os.path.dirname(args.pathCheckpoint))
+        _, _, locArgs = getCheckpointData(os.path.dirname(args.load))
         transferArgs(args, locArgs,
-                     ["hiddenEncoder", "hiddenGar", "nLevelsGRU"])
+                     ["hiddenEncoder", "hiddenGar", "nLevelsGRU", "transformer"])
     if args.pathCheckpoint is not None and not args.restart:
         cdata = getCheckpointData(args.pathCheckpoint)
         if cdata is not None:
             data, logs, locArgs = cdata
             print(f"Checkpoint detected at {data}")
             loadArgs(args, locArgs,
-                     forbiddenAttr={"nGPU", "pathCheckpoint", "debug"})
+                     forbiddenAttr={"nGPU", "pathCheckpoint", "debug", "restart"})
             args.load, loadOptimizer = data, True
 
     seqNames, speakers = findAllSeqs(args.pathDB,
@@ -320,10 +321,7 @@ def main(args):
     if args.load is not None:
         print("Loading checkpoint " + args.load)
         state_dict = torch.load(args.load)
-        if args.eval and "best" in state_dict:
-            cpcModel.load_state_dict(state_dict["best"])
-        else:
-            cpcModel.load_state_dict(state_dict["gEncoder"])
+        cpcModel.load_state_dict(state_dict["gEncoder"])
 
     if args.nGPU < 0:
         args.nGPU = torch.cuda.device_count()
@@ -427,7 +425,6 @@ def parseArgs(argv):
     parser.add_argument('--dataset_levels', type=int, default=2)
     parser.add_argument('--disable_offset', action='store_true')
     parser.add_argument('--restart', action='store_true')
-    parser.add_argument('--transformer', action='store_true')
     return parser.parse_args(argv)
 
 
