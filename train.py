@@ -314,15 +314,9 @@ def main(args):
                                 list(speakers))
 
     # Base Model
-    if args.transformer:
-        from transformers import CPCTransformer
-        cpcModel = CPCTransformer(args.hiddenEncoder, args.hiddenGar, 1,
-                                  args.sizeWindow // 160)
-        args.hiddenGar = args.hiddenEncoder
-    else:
-        cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar,
-                            args.samplingType == "sequential",
-                            args.nLevelsGRU)
+    cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar,
+                        args.samplingType == "sequential",
+                        args.nLevelsGRU)
 
     if args.load is not None:
         print("Loading checkpoint " + args.load)
@@ -434,7 +428,6 @@ def parseArgs(argv):
     parser.add_argument('--dataset_levels', type=int, default=2)
     parser.add_argument('--disable_offset', action='store_true')
     parser.add_argument('--restart', action='store_true')
-    parser.add_argument('--transformer', action='store_true')
     return parser.parse_args(argv)
 
 
