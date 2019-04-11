@@ -156,9 +156,6 @@ def trainStep(dataLoader,
 
         totLoss = allLosses.sum()
         totLoss.backward()
-        #if model.optimize:
-        #    torch.nn.utils.clip_grad_norm_(list(model.parameters()),
-        #                                   1, norm_type=2)
         optimizer.step()
         optimizer.zero_grad()
 
