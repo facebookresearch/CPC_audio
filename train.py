@@ -156,9 +156,9 @@ def trainStep(dataLoader,
 
         totLoss = allLosses.sum()
         totLoss.backward()
-        if model.optimize:
-            torch.nn.utils.clip_grad_norm_(list(model.parameters()),
-                                           1, norm_type=2)
+        #if model.optimize:
+        #    torch.nn.utils.clip_grad_norm_(list(model.parameters()),
+        #                                   1, norm_type=2)
         optimizer.step()
         optimizer.zero_grad()
 
@@ -314,14 +314,23 @@ def main(args):
                                 list(speakers))
 
     # Base Model
-    cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar,
-                        args.samplingType == "sequential",
-                        args.nLevelsGRU)
+    if args.transformer:
+        from transformers import CPCTransformer
+        cpcModel = CPCTransformer(args.hiddenEncoder, 1,
+                                  args.sizeWindow // 160, args.abspos)
+        args.hiddenGar = args.hiddenEncoder
+    else:
+        cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar,
+                            args.samplingType == "sequential",
+                            args.nLevelsGRU)
 
     if args.load is not None:
         print("Loading checkpoint " + args.load)
         state_dict = torch.load(args.load)
-        cpcModel.load_state_dict(state_dict["gEncoder"])
+        if False:#args.eval and "best" in state_dict:
+            cpcModel.load_state_dict(state_dict["best"])
+        else:
+            cpcModel.load_state_dict(state_dict["gEncoder"])
 
     if args.nGPU < 0:
         args.nGPU = torch.cuda.device_count()
@@ -363,7 +372,9 @@ def main(args):
         print("Optimizing model")
         g_params += list(cpcModel.parameters())
 
-    optimizer = torch.optim.Adam(g_params, lr=args.learningRate)
+    optimizer = torch.optim.Adam(g_params, lr=args.learningRate,
+                                 betas=(args.beta1, args.beta2),
+                                 eps=args.epsilon)
 
     if args.load is not None and loadOptimizer:
         print("Loading optimizer " + args.load)
@@ -411,6 +422,9 @@ def parseArgs(argv):
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--load', type=str, default=None)
     parser.add_argument('--learningRate', type=float, default=2e-4)
+    parser.add_argument('--beta1', type=float, default=0.9)
+    parser.add_argument('--beta2', type=float, default=0.999)
+    parser.add_argument('--epsilon', type=float, default=1e-08)
     parser.add_argument('--pathCheckpoint', type=str, default=None)
     parser.add_argument('--sizeWindow', type=int, default=20480)
     parser.add_argument('--nEpoch', type=int, default=200)
@@ -425,6 +439,8 @@ def parseArgs(argv):
     parser.add_argument('--dataset_levels', type=int, default=2)
     parser.add_argument('--disable_offset', action='store_true')
     parser.add_argument('--restart', action='store_true')
+    parser.add_argument('--transformer', action='store_true')
+    parser.add_argument('--abspos', action='store_true')
     return parser.parse_args(argv)
 
 
