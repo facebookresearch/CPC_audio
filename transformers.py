@@ -104,13 +104,7 @@ class TransformerLayer(nn.Module):
         self.ln_ffnetwork = nn.LayerNorm(dmodel)
 
     def forward(self, x):
-        xx = x
-        if hasattr(self, 'cache_hidden'):
-            if self.cache_hidden.numel() == 0:
-                self.cache_hidden = torch.zeros_like(x)
-            xx = torch.cat((self.cache_hidden, xx), dim=1).contiguous()
-            self.cache_hidden = x.detach()
-        y = self.ln_multihead(x + self.multihead(Q=x, K=xx, V=xx))
+        y = self.ln_multihead(x + self.multihead(Q=x, K=x, V=x))
         return self.ln_ffnetwork(y + self.ffnetwork(y))
 
 
