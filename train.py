@@ -324,10 +324,7 @@ def main(args):
     if args.load is not None:
         print("Loading checkpoint " + args.load)
         state_dict = torch.load(args.load)
-        if False:#args.eval and "best" in state_dict:
-            cpcModel.load_state_dict(state_dict["best"])
-        else:
-            cpcModel.load_state_dict(state_dict["gEncoder"])
+        cpcModel.load_state_dict(state_dict["gEncoder"])
 
     if args.nGPU < 0:
         args.nGPU = torch.cuda.device_count()
