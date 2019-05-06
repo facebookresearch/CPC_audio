@@ -228,6 +228,8 @@ def run(trainLoader,
 
         locLogsVal = valStep(valLoader, cpcModel, cpcCriterion)
 
+        torch.cuda.empty_cache()
+
         currentAccuracy = float(locLogsVal["locAcc_val"].mean())
         if currentAccuracy > bestAcc:
             bestStateDict = cpcModel.module.state_dict()
@@ -310,16 +312,30 @@ def main(args):
                                 phoneLabels,
                                 list(speakers))
 
-    # Base Model
+    # Encoder network
+    if args.encoder_type == 'mfcc':
+        from model import MFCCEncoder
+        encoderNet = MFCCEncoder(args.hiddenEncoder)
+    elif args.encoder_type == 'lfb':
+        from model import LFBEnconder
+        encoderNet = LFBEnconder(args.hiddenEncoder)
+    else:
+        from model import CPCEncoder
+        encoderNet = CPCEncoder(args.hiddenEncoder)
+
+    # AR Network
     if args.transformer:
-        from transformers import CPCTransformer
-        cpcModel = CPCTransformer(args.hiddenEncoder, 1,
-                                  args.sizeWindow // 160, args.abspos)
+        from transformers import buildTransformerAR
+        arNet = buildTransformerAR(args.hiddenEncoder, 1,
+                                   args.sizeWindow // 160, args.abspos)
         args.hiddenGar = args.hiddenEncoder
     else:
-        cpcModel = CPCModel(args.hiddenEncoder, args.hiddenGar,
-                            args.samplingType == "sequential",
-                            args.nLevelsGRU)
+        from model import CPCAR
+        arNet = CPCAR(args.hiddenEncoder, args.hiddenGar,
+                      args.samplingType == "sequential",
+                      args.nLevelsGRU)
+
+    cpcModel = CPCModel(encoderNet, arNet)
 
     if args.load is not None:
         print("Loading checkpoint " + args.load)
@@ -435,6 +451,9 @@ def parseArgs(argv):
     parser.add_argument('--restart', action='store_true')
     parser.add_argument('--transformer', action='store_true')
     parser.add_argument('--abspos', action='store_true')
+    parser.add_argument('--encoder_type', type=str,
+                        choices=['cpc', 'mfcc', 'lfb'],
+                        default='cpc')
     return parser.parse_args(argv)
 
 

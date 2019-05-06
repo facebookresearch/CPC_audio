@@ -3,7 +3,7 @@ import random
 import time
 import torch
 from copy import deepcopy
-from torch.multiprocessing import Pool, Lock, Manager
+from torch.multiprocessing import Lock, Manager
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import Sampler, BatchSampler
 
@@ -18,7 +18,7 @@ class AudioBatchData(Dataset):
                  seqNames,
                  phoneLabelsDict,
                  speakerList,
-                 MAX_SIZE_LOADED=5000000000,
+                 MAX_SIZE_LOADED=4000000000,
                  GROUP_SIZE_LOADED=2000):
         """
         Args:
@@ -72,27 +72,53 @@ class AudioBatchData(Dataset):
     def prepare(self, poolSize=50):
 
         nSeqs = len(self.seqNames)
-        index = 0
-        self.packageIndex = []
-        self.totSize = 0
         random.shuffle(self.seqNames)
         start_time = time.time()
 
-        while index < nSeqs:
-            packageLength = 0
-            startIndex = index
-            while packageLength < self.MAX_SIZE_LOADED:
-                maxIndex = min(index + self.GROUP_SIZE_LOADED, nSeqs)
-                with Pool(poolSize) as p:
-                    lenghtInfo = p.map(self.checkLength,
-                                       self.seqNames[index:maxIndex])
-                packageLength += sum([l_ for l_ in lenghtInfo])
-                index += self.GROUP_SIZE_LOADED
-                if index > nSeqs:
-                    break
-            self.totSize += packageLength
-            self.packageIndex.append((startIndex, min(index, nSeqs)))
+        # Data
+        nprocess = min(50, nSeqs)
+        sliceSize = nSeqs // nprocess
+        mutex = Lock()
 
+        def checkLength(rank, pool):
+            indexStart = sliceSize * rank
+            indexEnd = min(nSeqs, indexStart + sliceSize)
+            packageSize, start = 0, indexStart
+            output = []
+            for index, item in enumerate(self.seqNames[indexStart:indexEnd]):
+                _, seq = item
+                l_ = torchaudio.info(os.path.join(self.dbPath, seq))[0].length
+                packageSize+=l_
+                if packageSize > self.MAX_SIZE_LOADED:
+                    output.append([start, index, packageSize])
+                    packageSize, start = 0, index
+            output.append([start, indexEnd, packageSize])
+            mutex.acquire()
+            pool += output
+            mutex.release()
+
+        processes = []
+        manager = Manager()
+        pool = manager.list()
+        for rank in range(nprocess + 1):
+            p = torch.multiprocessing.Process(target=checkLength, args=(rank, pool))
+            p.start()
+            processes.append(p)
+        for p in processes:
+            p.join()
+
+        pool.sort()
+        self.packageIndex, self.totSize = [], 0
+        currSize, start = 0, 0
+        print(pool)
+        for item in pool:
+            iStart, iEnd, size = item
+            currSize+=size
+            self.totSize+=size
+            if currSize > self.MAX_SIZE_LOADED:
+                self.packageIndex.append([start, iEnd])
+                currSize, start = 0, iEnd
+        self.packageIndex.append([start, iStart+currSize])
         print(f'Scanned {len(self.seqNames)} sequences '
               f'in {time.time() - start_time:.2f} seconds')
         self.currentPack = -1

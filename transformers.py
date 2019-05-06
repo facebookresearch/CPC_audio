@@ -2,8 +2,6 @@ import torch
 import torch.nn as nn
 import math
 
-from model import EncoderNetwork
-
 
 class ScaledDotProductAttention(nn.Module):
     def __init__(self,
@@ -123,26 +121,14 @@ class StaticPositionEmbedding(nn.Module):
         return x + self.pe[:, :x.size(1), :]
 
 
-class CPCTransformer(nn.Module):
-
-    def __init__(self,
-                 dimEncoded,    # Output dimension of the encoder
-                 nLayers,       # Number of transformer layers
-                 sizeSeq,       # Expected size of the input sequence
-                 abspos):       # Encode position data before the transformer
-                                # layers
-
-        super(CPCTransformer, self).__init__()
-        self.gEncoder = EncoderNetwork(dimEncoded)
-        layerSequence = []
-        if abspos:
-            layerSequence += [StaticPositionEmbedding(sizeSeq, dimEncoded)]
-        layerSequence += [TransformerLayer(sizeSeq=sizeSeq,
-                                           dmodel=dimEncoded, abspos=abspos)
-                          for i in range(nLayers)]
-        self.gAR = nn.Sequential(*layerSequence)
-
-    def forward(self, batchData):
-        encodedData = self.gEncoder(batchData).permute(0, 2, 1)
-        cFeature = self.gAR(encodedData)
-        return cFeature, encodedData
+def buildTransformerAR(dimEncoded,    # Output dimension of the encoder
+                       nLayers,       # Number of transformer layers
+                       sizeSeq,       # Expected size of the input sequence
+                       abspos):
+    layerSequence =[]
+    if abspos:
+        layerSequence += [StaticPositionEmbedding(sizeSeq, dimEncoded)]
+    layerSequence += [TransformerLayer(sizeSeq=sizeSeq,
+                                       dmodel=dimEncoded, abspos=abspos)
+                      for i in range(nLayers)]
+    return nn.Sequential(*layerSequence)

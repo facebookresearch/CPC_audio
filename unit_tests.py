@@ -57,7 +57,7 @@ class TestDataLoader(unittest.TestCase):
         batchSize = 16
         testData = AudioBatchData(self.pathDB, self.sizeWindow,
                                   self.seqNames, None, self.speakerList,
-                                  MAX_SIZE_LOADED=900000,
+                                  MAX_SIZE_LOADED=1000000,
                                   GROUP_SIZE_LOADED=2)
         eq_(testData.getNPacks(), 2)
         testDataLoader = testData.getDataLoader(batchSize, "samespeaker",
