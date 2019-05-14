@@ -40,6 +40,33 @@ def saveLogs(data, pathLogs):
         json.dump(data, file, indent=2)
 
 
+def getEncoder(encoderType, hiddenEncoder):
+
+    if encoderType == 'mfcc':
+        from model import MFCCEncoder
+        return MFCCEncoder(hiddenEncoder)
+    elif encoderType == 'lfb':
+        from model import LFBEnconder
+        return LFBEnconder(hiddenEncoder)
+    else:
+        from model import CPCEncoder
+        return CPCEncoder(hiddenEncoder)
+
+
+def getAR(args):
+    if args.transformer:
+        from transformers import buildTransformerAR
+        arNet = buildTransformerAR(args.hiddenEncoder, 1,
+                                   args.sizeWindow // 160, args.abspos)
+        args.hiddenGar = args.hiddenEncoder
+    else:
+        from model import CPCAR
+        arNet = CPCAR(args.hiddenEncoder, args.hiddenGar,
+                      args.samplingType == "sequential",
+                      args.nLevelsGRU)
+    return arNet
+
+
 def loadArgs(args, locArgs, forbiddenAttr=None):
     for k, v in locArgs.items():
         if forbiddenAttr is not None:
@@ -51,7 +78,8 @@ def loadArgs(args, locArgs, forbiddenAttr=None):
 
 def transferArgs(args, locArgs, toTransfer):
     for key in toTransfer:
-        setattr(args, key, locArgs[key])
+        if key in locArgs:
+            setattr(args, key, locArgs[key])
 
 
 def getCheckpointData(pathDir):
@@ -263,7 +291,8 @@ def main(args):
     if args.load is not None:
         _, _, locArgs = getCheckpointData(os.path.dirname(args.load))
         transferArgs(args, locArgs,
-                     ["hiddenEncoder", "hiddenGar", "nLevelsGRU", "transformer"])
+                     ["hiddenEncoder", "hiddenGar", "nLevelsGRU",
+                      "transformer", "encoder_type", "reverse"])
     if args.pathCheckpoint is not None and not args.restart:
         cdata = getCheckpointData(args.pathCheckpoint)
         if cdata is not None:
@@ -313,29 +342,12 @@ def main(args):
                                 list(speakers))
 
     # Encoder network
-    if args.encoder_type == 'mfcc':
-        from model import MFCCEncoder
-        encoderNet = MFCCEncoder(args.hiddenEncoder)
-    elif args.encoder_type == 'lfb':
-        from model import LFBEnconder
-        encoderNet = LFBEnconder(args.hiddenEncoder)
-    else:
-        from model import CPCEncoder
-        encoderNet = CPCEncoder(args.hiddenEncoder)
+    encoderNet = getEncoder(args.encoder_type, args.hiddenEncoder)
 
     # AR Network
-    if args.transformer:
-        from transformers import buildTransformerAR
-        arNet = buildTransformerAR(args.hiddenEncoder, 1,
-                                   args.sizeWindow // 160, args.abspos)
-        args.hiddenGar = args.hiddenEncoder
-    else:
-        from model import CPCAR
-        arNet = CPCAR(args.hiddenEncoder, args.hiddenGar,
-                      args.samplingType == "sequential",
-                      args.nLevelsGRU)
+    arNet = getAR(args)
 
-    cpcModel = CPCModel(encoderNet, arNet)
+    cpcModel = CPCModel(encoderNet, arNet, args.reverse)
 
     if args.load is not None:
         print("Loading checkpoint " + args.load)
@@ -355,7 +367,8 @@ def main(args):
     if not args.supervised:
         cpcCriterion = CPCUnsupersivedCriterion(args.nPredicts, args.hiddenGar,
                                                 args.hiddenEncoder,
-                                                args.negativeSamplingExt)
+                                                args.negativeSamplingExt,
+                                                args.reverse)
     elif args.pathPhone is not None:
         cpcCriterion = PhoneCriterion(args.hiddenGar, nPhones)
     else:
@@ -432,6 +445,7 @@ def parseArgs(argv):
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--load', type=str, default=None)
     parser.add_argument('--learningRate', type=float, default=2e-4)
+    parser.add_argument('--schedulerStep', type=int, default=-1)
     parser.add_argument('--beta1', type=float, default=0.9)
     parser.add_argument('--beta2', type=float, default=0.999)
     parser.add_argument('--epsilon', type=float, default=1e-08)
@@ -451,6 +465,7 @@ def parseArgs(argv):
     parser.add_argument('--restart', action='store_true')
     parser.add_argument('--transformer', action='store_true')
     parser.add_argument('--abspos', action='store_true')
+    parser.add_argument('--reverse', action='store_true')
     parser.add_argument('--encoder_type', type=str,
                         choices=['cpc', 'mfcc', 'lfb'],
                         default='cpc')
