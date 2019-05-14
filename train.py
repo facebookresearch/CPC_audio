@@ -3,14 +3,15 @@ import json
 import os
 from random import shuffle
 import sys
+from termcolor import colored
 
 import numpy as np
 import torch
 
 from dataset import AudioBatchData
-from model import CPCModel
+from model import CPCModel, ConcatenatedModel
 from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, \
-                      PhoneCriterion
+    PhoneCriterion
 import psutil
 
 
@@ -288,18 +289,14 @@ def main(args):
     print('-' * 50)
 
     logs, loadOptimizer = {"epoch": []}, False
-    if args.load is not None:
-        _, _, locArgs = getCheckpointData(os.path.dirname(args.load))
-        transferArgs(args, locArgs,
-                     ["hiddenEncoder", "hiddenGar", "nLevelsGRU",
-                      "transformer", "encoder_type", "reverse"])
     if args.pathCheckpoint is not None and not args.restart:
         cdata = getCheckpointData(args.pathCheckpoint)
         if cdata is not None:
             data, logs, locArgs = cdata
             print(f"Checkpoint detected at {data}")
             loadArgs(args, locArgs,
-                     forbiddenAttr={"nGPU", "pathCheckpoint", "debug", "restart"})
+                     forbiddenAttr={"nGPU", "pathCheckpoint",
+                                    "debug", "restart"})
             args.load, loadOptimizer = data, True
 
     seqNames, speakers = findAllSeqs(args.pathDB,
@@ -341,18 +338,39 @@ def main(args):
                                 phoneLabels,
                                 list(speakers))
 
-    # Encoder network
-    encoderNet = getEncoder(args.encoder_type, args.hiddenEncoder)
-
-    # AR Network
-    arNet = getAR(args)
-
-    cpcModel = CPCModel(encoderNet, arNet, args.reverse)
-
     if args.load is not None:
-        print("Loading checkpoint " + args.load)
-        state_dict = torch.load(args.load)
-        cpcModel.load_state_dict(state_dict["gEncoder"])
+        models = []
+        hiddenGar, hiddenEncoder = 0, 0
+        for path in args.load:
+            print(f"Loading checkpoint {path}")
+            _, _, locArgs = getCheckpointData(os.path.dirname(path))
+            transferArgs(args, locArgs,
+                         ["hiddenEncoder", "hiddenGar", "nLevelsGRU",
+                          "transformer", "encoder_type", "reverse"])
+            encoderNet = getEncoder(args.encoder_type, args.hiddenEncoder)
+            arNet = getAR(args)
+            state_dict = torch.load(path)
+            m_ = CPCModel(encoderNet, arNet, args.reverse)
+            m_.load_state_dict(state_dict["gEncoder"])
+            models.append(m_)
+            hiddenGar += locArgs["hiddenGar"]
+            hiddenEncoder += locArgs["hiddenEncoder"]
+        if len(models) == 1:
+            cpcModel = models[0]
+        else:
+            if not args.eval:
+                print(colored(f'WARNING: concatenated models not fit for \
+                              training mode', 'red'))
+            cpcModel = ConcatenatedModel(models)
+        args.hiddenGar = hiddenGar
+        args.hiddenEncoder = hiddenEncoder
+    else:
+        # Encoder network
+        encoderNet = getEncoder(args.encoder_type, args.hiddenEncoder)
+
+        # AR Network
+        arNet = getAR(args)
+        cpcModel = CPCModel(encoderNet, arNet, args.reverse)
 
     if args.nGPU < 0:
         args.nGPU = torch.cuda.device_count()
@@ -399,9 +417,9 @@ def main(args):
                                  betas=(args.beta1, args.beta2),
                                  eps=args.epsilon)
 
-    if args.load is not None and loadOptimizer:
-        print("Loading optimizer " + args.load)
-        state_dict = torch.load(args.load)
+    if loadOptimizer:
+        print("Loading optimizer " + args.load[0])
+        state_dict = torch.load(args.load[0])
         if "optimizer" in state_dict:
             optimizer.load_state_dict(state_dict["optimizer"])
 
@@ -443,7 +461,7 @@ def parseArgs(argv):
     parser.add_argument('--negativeSamplingExt', type=int, default=128)
     parser.add_argument('--supervised', action='store_true')
     parser.add_argument('--eval', action='store_true')
-    parser.add_argument('--load', type=str, default=None)
+    parser.add_argument('--load', type=str, default=None, nargs='*')
     parser.add_argument('--learningRate', type=float, default=2e-4)
     parser.add_argument('--schedulerStep', type=int, default=-1)
     parser.add_argument('--beta1', type=float, default=0.9)

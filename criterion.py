@@ -37,7 +37,8 @@ class CPCUnsupersivedCriterion(nn.Module):
                  nPredicts,             # Number of steps
                  dimOutputAR,           # Dimension of G_ar
                  dimOutputEncoder,      # Dimension of the convolutional net
-                 negativeSamplingExt):  # Number of negative samples to draw
+                 negativeSamplingExt,   # Number of negative samples to draw
+                 reverse=False):
 
         super(CPCUnsupersivedCriterion, self).__init__()
         self.wPrediction = PredictionNetwork(
@@ -45,6 +46,7 @@ class CPCUnsupersivedCriterion(nn.Module):
         self.nPredicts = nPredicts
         self.negativeSamplingExt = negativeSamplingExt
         self.lossCriterion = nn.CrossEntropyLoss()
+        self.reverse = reverse
 
     def sample(self, encodedData, windowSize):
 
@@ -77,6 +79,10 @@ class CPCUnsupersivedCriterion(nn.Module):
         return outputs, labelLoss
 
     def forward(self, cFeature, encodedData, *args):
+
+        if self.reverse:
+            encodedData = torch.flip(encodedData, [1])
+            cFeature = torch.flip(cFeature, [1])
 
         # cFeature.size() : batchSize x seq Size x hidden size
         windowSize = cFeature.size(1) - self.nPredicts

@@ -66,7 +66,7 @@ class LFBEnconder(nn.Module):
                               400, stride=1)
         self.register_buffer('han', torch.hann_window(400).view(1, 1, 400))
         self.instancenorm = nn.InstanceNorm1d(dimEncoded, momentum=1) \
-                            if normalize else None
+            if normalize else None
 
     def forward(self, x):
 
@@ -76,11 +76,11 @@ class LFBEnconder(nn.Module):
         x = x[:, :, 0, :]**2 + x[:, :, 1, :]**2
         x = x.view(N * self.dimEncoded, 1,  -1)
         x = torch.nn.functional.conv1d(x, self.han, bias=None,
-                                       stride=160)
+                                       stride=160, padding=350)
         x = x.view(N, self.dimEncoded,  -1)
         x = torch.log(1 + torch.abs(x))
 
-        # Nornalization
+        # Normalization
         if self.instancenorm is not None:
             x = self.instancenorm(x)
         return x
@@ -121,13 +121,41 @@ class CPCModel(nn.Module):
 
     def __init__(self,
                  encoder,
-                 AR):
+                 AR,
+                 reverse=False):
 
         super(CPCModel, self).__init__()
         self.gEncoder = encoder
         self.gAR = AR
+        self.reverse = reverse
 
     def forward(self, batchData):
         encodedData = self.gEncoder(batchData).permute(0, 2, 1)
+        if self.reverse:
+            encodedData = torch.flip(encodedData, [1])
         cFeature = self.gAR(encodedData)
+
+        # For better modularity, a sequence's order should be preserved
+        # by each module
+        if self.reverse:
+            encodedData = torch.flip(encodedData, [1])
+            cFeature = torch.flip(cFeature, [1])
         return cFeature, encodedData
+
+
+class ConcatenatedModel(nn.Module):
+
+    def __init__(self, model_list):
+
+        super(ConcatenatedModel, self).__init__()
+        self.models = torch.nn.ModuleList(model_list)
+
+    def forward(self, batchData):
+
+        outFeatures = []
+        outEncoded = []
+        for model in self.models:
+            cFeature, encodedData = model(batchData)
+            outFeatures.append(cFeature)
+            outEncoded.append(encodedData)
+        return torch.cat(outFeatures, dim=2), torch.cat(outEncoded, dim=2)
