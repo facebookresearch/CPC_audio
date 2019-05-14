@@ -64,11 +64,12 @@ class MultiHeadAttention(nn.Module):
 
     def trans_(self, x):
         bsz, bptt, h, dk = x.size(0), x.size(1), self.nheads, self.dk
-        return x.view(bsz, bptt, h, dk).transpose(1,2).contiguous().view(bsz * h, bptt, dk)
+        return x.view(bsz, bptt, h, dk).transpose(1, 2).contiguous().view(bsz * h, bptt, dk)
 
     def reverse_trans_(self, x):
-        bsz, bptt, h, dk = x.size(0) // self.nheads, x.size(1), self.nheads, self.dk
-        return x.view(bsz, h, bptt, dk).transpose(1,2).contiguous().view(bsz, bptt, h * dk)
+        bsz, bptt, h, dk = x.size(
+            0) // self.nheads, x.size(1), self.nheads, self.dk
+        return x.view(bsz, h, bptt, dk).transpose(1, 2).contiguous().view(bsz, bptt, h * dk)
 
     def forward(self, Q, K, V):
         q = self.trans_(self.Wq(Q))
@@ -125,7 +126,7 @@ def buildTransformerAR(dimEncoded,    # Output dimension of the encoder
                        nLayers,       # Number of transformer layers
                        sizeSeq,       # Expected size of the input sequence
                        abspos):
-    layerSequence =[]
+    layerSequence = []
     if abspos:
         layerSequence += [StaticPositionEmbedding(sizeSeq, dimEncoded)]
     layerSequence += [TransformerLayer(sizeSeq=sizeSeq,

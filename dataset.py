@@ -88,7 +88,7 @@ class AudioBatchData(Dataset):
             for index, item in enumerate(self.seqNames[indexStart:indexEnd]):
                 _, seq = item
                 l_ = torchaudio.info(os.path.join(self.dbPath, seq))[0].length
-                packageSize+=l_
+                packageSize += l_
                 if packageSize > self.MAX_SIZE_LOADED:
                     output.append([start, index, packageSize])
                     packageSize, start = 0, index
@@ -101,7 +101,8 @@ class AudioBatchData(Dataset):
         manager = Manager()
         pool = manager.list()
         for rank in range(nprocess + 1):
-            p = torch.multiprocessing.Process(target=checkLength, args=(rank, pool))
+            p = torch.multiprocessing.Process(
+                target=checkLength, args=(rank, pool))
             p.start()
             processes.append(p)
         for p in processes:
@@ -110,11 +111,10 @@ class AudioBatchData(Dataset):
         pool.sort()
         self.packageIndex, self.totSize = [], 0
         currSize, start = 0, 0
-        print(pool)
         for item in pool:
             iStart, iEnd, size = item
-            currSize+=size
-            self.totSize+=size
+            currSize += size
+            self.totSize += size
             if currSize > self.MAX_SIZE_LOADED:
                 self.packageIndex.append([start, iEnd])
                 currSize, start = 0, iEnd
@@ -263,7 +263,7 @@ class AudioBatchData(Dataset):
         """
         def samplerCall():
             offset = random.randint(0, self.sizeWindow // 2) \
-                     if randomOffset else 0
+                if randomOffset else 0
             return self.getBaseSampler(type, batchSize, offset)
 
         return AudioLoader(self, samplerCall, len(self.packageIndex),
@@ -318,7 +318,7 @@ class UniformAudioSampler(Sampler):
 
     def __iter__(self):
         return iter((self.offset
-                    + self.sizeWindow * torch.randperm(self.len)).tolist())
+                     + self.sizeWindow * torch.randperm(self.len)).tolist())
 
     def __len__(self):
         return self.len
@@ -389,7 +389,7 @@ class SameSpeakerSampler(Sampler):
 
     def getIndex(self, x, iInterval):
         return self.offset + x * self.sizeWindow \
-               + self.samplingIntervals[iInterval]
+            + self.samplingIntervals[iInterval]
 
     def __iter__(self):
         random.shuffle(self.batches)

@@ -30,7 +30,6 @@ class TestDataLoader(unittest.TestCase):
         assert(testData.getNSpeakers() == 9)
         assert(testData.getNSeqs() == 9)
 
-
     def testDataLoader(self):
 
         batchSize = 16
@@ -95,7 +94,8 @@ class TestPhonemParser(unittest.TestCase):
         speakers = list(set([x[0] for x in seqNames]))
         phoneData, _ = self.seqLoader(self.pathPhone)
         pathDB = "/datasets01/LibriSpeech/022219/train-clean-100/"
-        testData = AudioBatchData(pathDB, sizeWindow, seqNames, phoneData, speakers)
+        testData = AudioBatchData(
+            pathDB, sizeWindow, seqNames, phoneData, speakers)
         eq_(testData.getPhonem(81280), [0, 0, 0, 0])
         eq_(testData.getPhonem(84841), [0, 0, 0, 18])
         eq_(testData.getPhonem(88201), [14, 14, 14, 14])
