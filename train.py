@@ -297,7 +297,7 @@ def main(args):
             loadArgs(args, locArgs,
                      forbiddenAttr={"nGPU", "pathCheckpoint",
                                     "debug", "restart"})
-            args.load, loadOptimizer = data, True
+            args.load, loadOptimizer = [data], True
 
     seqNames, speakers = findAllSeqs(args.pathDB,
                                      recursionLevel=args.dataset_levels,
@@ -345,8 +345,8 @@ def main(args):
             print(f"Loading checkpoint {path}")
             _, _, locArgs = getCheckpointData(os.path.dirname(path))
             transferArgs(args, locArgs,
-                         ["hiddenEncoder", "hiddenGar", "nLevelsGRU",
-                          "transformer", "encoder_type", "reverse"])
+                        ["hiddenEncoder", "hiddenGar", "nLevelsGRU",
+                         "transformer", "encoder_type", "reverse"])
             encoderNet = getEncoder(args.encoder_type, args.hiddenEncoder)
             arNet = getAR(args)
             state_dict = torch.load(path)
