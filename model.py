@@ -1,17 +1,20 @@
 import torch.nn as nn
 import torch.nn.functional as F
+import torchaudio
+
+import torch
 
 ###########################################
 # Networks
 ###########################################
 
 
-class EncoderNetwork(nn.Module):
+class CPCEncoder(nn.Module):
 
     def __init__(self,
                  sizeHidden=512):
 
-        super(EncoderNetwork, self).__init__()
+        super(CPCEncoder, self).__init__()
         self.conv0 = nn.Conv1d(1, sizeHidden, 10, stride=5, padding=3)
         self.batchNorm0 = nn.BatchNorm1d(sizeHidden)
         self.conv1 = nn.Conv1d(sizeHidden, sizeHidden, 8, stride=4, padding=2)
@@ -22,6 +25,7 @@ class EncoderNetwork(nn.Module):
         self.batchNorm3 = nn.BatchNorm1d(sizeHidden)
         self.conv4 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2, padding=1)
         self.batchNorm4 = nn.BatchNorm1d(sizeHidden)
+        self.DOWNSAMPLING = 160
 
     def getDimOutput(self):
         return self.conv4.out_channels
@@ -36,7 +40,53 @@ class EncoderNetwork(nn.Module):
         return x
 
 
-class AutoregressiveNetwork(nn.Module):
+class MFCCEncoder(nn.Module):
+
+    def __init__(self,
+                 dimEncoded):
+
+        super(MFCCEncoder, self).__init__()
+        melkwargs = {"n_mels": max(128, dimEncoded)}
+        self.MFCC = torchaudio.transforms.MFCC(n_mfcc=dimEncoded,
+                                               melkwargs=melkwargs)
+
+    def forward(self, x):
+        x = x.view(x.size(0), -1)
+        x = self.MFCC(x)
+        return x.permute(0, 2, 1)
+
+
+class LFBEnconder(nn.Module):
+
+    def __init__(self, dimEncoded, normalize=True):
+
+        super(LFBEnconder, self).__init__()
+        self.dimEncoded = dimEncoded
+        self.conv = nn.Conv1d(1, 2 * dimEncoded,
+                              400, stride=1)
+        self.register_buffer('han', torch.hann_window(400).view(1, 1, 400))
+        self.instancenorm = nn.InstanceNorm1d(dimEncoded, momentum=1) \
+            if normalize else None
+
+    def forward(self, x):
+
+        N, C, L = x.size()
+        x = self.conv(x)
+        x = x.view(N, self.dimEncoded, 2, -1)
+        x = x[:, :, 0, :]**2 + x[:, :, 1, :]**2
+        x = x.view(N * self.dimEncoded, 1,  -1)
+        x = torch.nn.functional.conv1d(x, self.han, bias=None,
+                                       stride=160, padding=350)
+        x = x.view(N, self.dimEncoded,  -1)
+        x = torch.log(1 + torch.abs(x))
+
+        # Normalization
+        if self.instancenorm is not None:
+            x = self.instancenorm(x)
+        return x
+
+
+class CPCAR(nn.Module):
 
     def __init__(self,
                  dimEncoded,
@@ -44,7 +94,7 @@ class AutoregressiveNetwork(nn.Module):
                  keepHidden,
                  nLevelsGRU):
 
-        super(AutoregressiveNetwork, self).__init__()
+        super(CPCAR, self).__init__()
 
         self.baseNet = nn.GRU(dimEncoded, dimOutput,
                               num_layers=nLevelsGRU, batch_first=True)
@@ -61,6 +111,7 @@ class AutoregressiveNetwork(nn.Module):
             self.hidden = h.detach()
         return x
 
+
 ###########################################
 # Model
 ###########################################
@@ -69,17 +120,42 @@ class AutoregressiveNetwork(nn.Module):
 class CPCModel(nn.Module):
 
     def __init__(self,
-                 dimEncoded,
-                 dimAR,
-                 keepHidden,
-                 nLevelsGRU):
+                 encoder,
+                 AR,
+                 reverse=False):
 
         super(CPCModel, self).__init__()
-        self.gEncoder = EncoderNetwork(dimEncoded)
-        self.gAR = AutoregressiveNetwork(dimEncoded, dimAR,
-                                         keepHidden, nLevelsGRU)
+        self.gEncoder = encoder
+        self.gAR = AR
+        self.reverse = reverse
 
     def forward(self, batchData):
         encodedData = self.gEncoder(batchData).permute(0, 2, 1)
+        if self.reverse:
+            encodedData = torch.flip(encodedData, [1])
         cFeature = self.gAR(encodedData)
+
+        # For better modularity, a sequence's order should be preserved
+        # by each module
+        if self.reverse:
+            encodedData = torch.flip(encodedData, [1])
+            cFeature = torch.flip(cFeature, [1])
         return cFeature, encodedData
+
+
+class ConcatenatedModel(nn.Module):
+
+    def __init__(self, model_list):
+
+        super(ConcatenatedModel, self).__init__()
+        self.models = torch.nn.ModuleList(model_list)
+
+    def forward(self, batchData):
+
+        outFeatures = []
+        outEncoded = []
+        for model in self.models:
+            cFeature, encodedData = model(batchData)
+            outFeatures.append(cFeature)
+            outEncoded.append(encodedData)
+        return torch.cat(outFeatures, dim=2), torch.cat(outEncoded, dim=2)
