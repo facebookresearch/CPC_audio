@@ -1,3 +1,7 @@
+## Setup instructions
+
+Check the setup [guide](setup/setup.MD).
+
 ## Repository architecture
 
 train.py : main script
