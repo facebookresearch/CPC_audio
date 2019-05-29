@@ -1,7 +1,7 @@
 import argparse
 import json
 import os
-from random import shuffle
+import random
 import sys
 from termcolor import colored
 
@@ -14,6 +14,13 @@ from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, \
     PhoneCriterion
 import psutil
 
+
+def set_seed(seed):
+    random.seed(seed)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 def updateAndShowLogs(text, logs, nPredicts):
     logStep = logs["step"]
@@ -289,6 +296,8 @@ def main(args):
     print(f'CONFIG:\n{json.dumps(vars(args), indent=4, sort_keys=True)}')
     print('-' * 50)
 
+    set_seed(args.random_seed)
+
     logs, loadOptimizer = {"epoch": []}, False
     if args.pathCheckpoint is not None and not args.restart:
         cdata = getCheckpointData(args.pathCheckpoint)
@@ -311,7 +320,7 @@ def main(args):
         seqTrain = seqNames
 
     if args.pathVal is None:
-        shuffle(seqTrain)
+        random.shuffle(seqTrain)
         sizeTrain = int(0.8 * len(seqTrain))
         seqTrain, seqVal = seqTrain[:sizeTrain], seqTrain[sizeTrain:]
     else:
@@ -488,7 +497,14 @@ def parseArgs(argv):
     parser.add_argument('--encoder_type', type=str,
                         choices=['cpc', 'mfcc', 'lfb'],
                         default='cpc')
-    return parser.parse_args(argv)
+    parser.add_argument('--random_seed', type=int, default=None)
+    args = parser.parse_args(argv)
+
+    # set it up if needed, so that it is dumped along with other args
+    if args.random_seed is None:
+        args.random_seed = random.randint(0, 2**31)
+
+    return args
 
 
 if __name__ == "__main__":
