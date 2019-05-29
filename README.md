@@ -1,6 +1,6 @@
 ## Setup instructions
 
-Check the setup [guide](setup/setup.MD).
+Check the setup [setup guide](setup/setup.MD).
 
 ## Repository architecture
 
@@ -44,6 +44,19 @@ python train.py --pathDB $PATH_TO_LIBRISPEECH_DB --supervised --eval --load mode
 
 Will evaluate the speaker separability of the concatenation of model1 and model2.
 
+
+## Runnning a grid-search over hyper-parameters
+
+Requires submitit, see [setup guide](setup/setup.MD). Preemption is not yet supported, hence it is advised to use either `dev` or `priority` partitions.
+
+Running a grid-search is as simple as
+```json
+python grid_search.py --sweep=./utils/small_grid.json --name=test --partition=dev
+```
+where `/utils/small_grid.json` is a json file defining grid (as in [example](utils/small_grid.json), `name` is the experiment name. 
+The resulting models and stdout/stderr streams of the runs would appear in `~/cpc/<name>/<data-time>/`.
+
+You can use the `--dry_run` parameter which prevents the jobs from being actually launched.
 ## FAIR ONLY: reference arguments
 
 Librispeech100 (clean):

@@ -285,6 +285,7 @@ def run(trainLoader,
 
 
 def main(args):
+    args = parseArgs(args)
     print(f'CONFIG:\n{json.dumps(vars(args), indent=4, sort_keys=True)}')
     print('-' * 50)
 
@@ -491,5 +492,6 @@ def parseArgs(argv):
 
 
 if __name__ == "__main__":
-    args = parseArgs(sys.argv[1:])
+    import sys
+    args = sys.argv[1:]
     main(args)

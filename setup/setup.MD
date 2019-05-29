@@ -12,3 +12,8 @@ The installation is a tiny bit involved due to the torch-audio dependency.
 3/ install torch-audio:
   * Linux: `pip install git+https://github.com/pytorch/audio.git`
   * MacOS: check the instruction on the site https://github.com/pytorch/audio
+
+# (FAIR only) Slurm-based grid search
+
+This feature requires submitit, which can be installed by running:
+`pip install git+ssh://git@github.com/fairinternal/submitit@master#egg=submitit`
