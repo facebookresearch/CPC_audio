@@ -11,7 +11,7 @@ import torch
 from dataset import AudioBatchData
 from model import CPCModel, ConcatenatedModel
 from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, \
-    PhoneCriterion
+                      PhoneCriterion
 import psutil
 
 
@@ -22,19 +22,33 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-def updateAndShowLogs(text, logs, nPredicts):
+def showGradValues(model):
+    max_ = -1
+    total_norm = 0
+    for p in model.parameters():
+        param_norm = p.grad.data.norm(2)
+        total_norm += param_norm.item() ** 2
+        max_ = max(param_norm, max_)
+    total_norm = total_norm ** (1. / 2)
+    print(total_norm, max_)
+
+
+def updateAndShowLogs(text, logs):
     logStep = logs["step"]
     print("")
     print('-'*50)
     print(text)
-    strSteps = ['Step'] + [str(s) for s in range(1, nPredicts + 1)]
-    formatCommand = ' '.join(['{:>16}' for x in range(nPredicts + 1)])
-    print(formatCommand.format(*strSteps))
 
     for key in logs:
 
         if key == "step":
             continue
+
+        nPredicts = logs[key].shape[0]
+
+        strSteps = ['Step'] + [str(s) for s in range(1, nPredicts + 1)]
+        formatCommand = ' '.join(['{:>16}' for x in range(nPredicts + 1)])
+        print(formatCommand.format(*strSteps))
 
         logs[key] /= logStep
         strLog = [key] + ["{:10.6f}".format(s) for s in logs[key]]
@@ -67,11 +81,15 @@ def getAR(args):
         arNet = buildTransformerAR(args.hiddenEncoder, 1,
                                    args.sizeWindow // 160, args.abspos)
         args.hiddenGar = args.hiddenEncoder
+    elif args.cpc_mode == "cloze":
+        from model import BiDIRAR
+        arNet = BiDIRAR(args.hiddenEncoder, args.hiddenGar, args.nLevelsGRU)
     else:
         from model import CPCAR
         arNet = CPCAR(args.hiddenEncoder, args.hiddenGar,
                       args.samplingType == "sequential",
-                      args.nLevelsGRU)
+                      args.nLevelsGRU,
+                      args.cpc_mode == "reverse")
     return arNet
 
 
@@ -171,10 +189,57 @@ def cpuStats():
     print(psutil.virtual_memory())
 
 
+def adversarialTrainStep(dataLoader, model, cpcCriterion, optimizerCPC,
+                         speakerCriterion, optimizerPhone):
+
+    model.train()
+    speakerCriterion.train()
+    cpcCriterion.train()
+
+    logs = {"step": 0, "loss_train_speak":0, "acc_train_speak": 0}
+    for step, fulldata in enumerate(dataLoader):
+
+        optimizerCPC.zero_grad()
+        optimizerPhone.zero_grad()
+
+        batchData, label = fulldata
+        batchData = batchData.cuda(non_blocking=True)
+        label = label.cuda(non_blocking=True)
+        cFeature, encodedData = model(batchData)
+
+        allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
+        lossSpeak, accSpeak = speakerCriterion(cFeature, encodedData, label)
+
+        if "locLoss_train_cpc" not in logs:
+            logs["locLoss_train_cpc"] = np.zeros(allLosses.size(1))
+            logs["locAcc_train_cpc"] = np.zeros(allLosses.size(1))
+
+        logs["step"] += 1
+        logs["locLoss_train_cpc"] += (allLosses.mean(dim=0)).detach().cpu().numpy()
+        logs["locAcc_train_cpc"] += (allAcc.mean(dim=0)).cpu().numpy()
+
+        totLoss = (allLosses - lossSpeak).sum()
+        totLoss.backward(retain_graph=True)
+        optimizerCPC.step()
+        optimizerPhone.zero_grad()
+
+        totLoss = lossSpeak.sum()
+        totLoss.backward()
+        optimizerPhone.step()
+
+        logs["loss_train_speak"] += (lossSpeak.mean(dim=0)).detach().cpu().numpy()
+        logs["acc_train_speak"] += (accSpeak.mean(dim=0)).cpu().numpy()
+
+    updateAndShowLogs("Update %d, training loss:" %
+                      (logs["step"] + 1), logs)
+    return logs
+
+
 def trainStep(dataLoader,
               model,
               cpcCriterion,
-              optimizer):
+              optimizer,
+              scheduler):
 
     if model.optimize:
         model.train()
@@ -187,7 +252,6 @@ def trainStep(dataLoader,
         batchData = batchData.cuda(non_blocking=True)
         label = label.cuda(non_blocking=True)
         cFeature, encodedData = model(batchData)
-
         allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
 
         totLoss = allLosses.sum()
@@ -204,7 +268,11 @@ def trainStep(dataLoader,
         logs["locAcc_train"] += (allAcc.mean(dim=0)).cpu().numpy()
 
     updateAndShowLogs("Update %d, training loss:" %
-                      (logs["step"] + 1), logs, logs["locLoss_train"].shape[0])
+                      (logs["step"] + 1), logs)
+
+    if scheduler is not None:
+        scheduler.step()
+
     return logs
 
 
@@ -235,7 +303,7 @@ def valStep(dataLoader,
         logs["locAcc_val"] += allAcc.mean(dim=0).cpu().numpy()
 
     logs["step"] = step
-    updateAndShowLogs("Validation loss:", logs, logs["locLoss_val"].shape[0])
+    updateAndShowLogs("Validation loss:", logs)
     return logs
 
 
@@ -246,12 +314,18 @@ def run(trainLoader,
         nEpoch,
         pathCheckpoint,
         optimizer,
-        logs):
+        scheduler,
+        logs,
+        adversarial):
 
     print(f"Running {nEpoch} epochs")
     startEpoch = len(logs["epoch"])
     bestAcc = 0
     bestStateDict = None
+
+    if adversarial is not None:
+        optimAdv = torch.optim.Adam(list(adversarial.parameters()), lr=2e-4)
+
     for epoch in range(startEpoch, nEpoch):
 
         print(f"Starting epoch {epoch}")
@@ -260,8 +334,14 @@ def run(trainLoader,
 
         cpuStats()
 
-        locLogsTrain = trainStep(
-            trainLoader, cpcModel, cpcCriterion, optimizer)
+        if adversarial is not None:
+            locLogsTrain = adversarialTrainStep(trainLoader, cpcModel,
+                                                cpcCriterion,
+                                                optimizer, adversarial,
+                                                optimAdv)
+        else:
+            locLogsTrain = trainStep(
+                trainLoader, cpcModel, cpcCriterion, optimizer, scheduler)
 
         locLogsVal = valStep(valLoader, cpcModel, cpcCriterion)
 
@@ -281,10 +361,10 @@ def run(trainLoader,
         logs["epoch"].append(epoch)
 
         if pathCheckpoint is not None \
-                and (epoch % 5 == 0 or epoch == nEpoch-1):
+                and (epoch % logs["saveStep"] == 0 or epoch == nEpoch-1):
             print(pathCheckpoint)
             stateDict = {"gEncoder": cpcModel.module.state_dict(),
-                         "cpcCriterion": cpcCriterion.state_dict(),
+                         "cpcCriterion": cpcCriterion.module.state_dict(),
                          "optimizer": optimizer.state_dict(),
                          "best": bestStateDict}
 
@@ -298,8 +378,7 @@ def main(args):
     print('-' * 50)
 
     set_seed(args.random_seed)
-
-    logs, loadOptimizer = {"epoch": []}, False
+    logs, loadOptimizer = {"epoch": [], "saveStep": args.save_step}, False
     if args.pathCheckpoint is not None and not args.restart:
         cdata = getCheckpointData(args.pathCheckpoint)
         if cdata is not None:
@@ -357,11 +436,11 @@ def main(args):
             _, _, locArgs = getCheckpointData(os.path.dirname(path))
             transferArgs(args, locArgs,
                         ["hiddenEncoder", "hiddenGar", "nLevelsGRU",
-                         "transformer", "encoder_type", "reverse"])
+                         "transformer", "encoder_type", "cpc_mode"])
             encoderNet = getEncoder(args.encoder_type, args.hiddenEncoder)
             arNet = getAR(args)
             state_dict = torch.load(path)
-            m_ = CPCModel(encoderNet, arNet, args.reverse)
+            m_ = CPCModel(encoderNet, arNet)
             m_.load_state_dict(state_dict["gEncoder"])
             models.append(m_)
             hiddenGar += locArgs["hiddenGar"]
@@ -381,7 +460,7 @@ def main(args):
 
         # AR Network
         arNet = getAR(args)
-        cpcModel = CPCModel(encoderNet, arNet, args.reverse)
+        cpcModel = CPCModel(encoderNet, arNet)
 
     batchSize = args.nGPU * args.batchSizeGPU
 
@@ -392,12 +471,16 @@ def main(args):
         cpcCriterion = CPCUnsupersivedCriterion(args.nPredicts, args.hiddenGar,
                                                 args.hiddenEncoder,
                                                 args.negativeSamplingExt,
-                                                args.reverse)
+                                                mode=args.cpc_mode)
     elif args.pathPhone is not None:
         cpcCriterion = PhoneCriterion(args.hiddenGar, nPhones)
     else:
         cpcCriterion = SpeakerCriterion(args.hiddenGar,
                                         len(speakers))
+
+    if loadOptimizer:
+        state_dict = torch.load(args.load)
+        cpcCriterion.load_state_dict(state_dict["cpcCriterion"])
 
     cpcCriterion = torch.nn.DataParallel(cpcCriterion,
                                          device_ids=range(args.nGPU))
@@ -442,6 +525,22 @@ def main(args):
                                              numWorkers=0)
     valLoader = valDataset.getDataLoader(batchSize, 'sequential', False,
                                          numWorkers=0)
+
+    if args.schedulerStep > 0:
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
+                                                    args.schedulerStep,
+                                                    gamma=0.1)
+    else:
+        scheduler = None
+
+    adversarial = None
+    if args.adversarial:
+        adversarial = SpeakerCriterion(args.hiddenGar,
+                                       len(speakers))
+        adversarial = torch.nn.DataParallel(adversarial,
+                                            device_ids=range(args.nGPU))
+        adversarial.cuda()
+
     run(trainLoader,
         valLoader,
         cpcModel,
@@ -449,7 +548,9 @@ def main(args):
         args.nEpoch,
         args.pathCheckpoint,
         optimizer,
-        logs)
+        scheduler,
+        logs,
+        adversarial)
 
 
 def parseArgs(argv):
@@ -487,13 +588,16 @@ def parseArgs(argv):
     parser.add_argument('--dataset_levels', type=int, default=2)
     parser.add_argument('--disable_offset', action='store_true')
     parser.add_argument('--restart', action='store_true')
-    parser.add_argument('--transformer', action='store_true')
     parser.add_argument('--abspos', action='store_true')
-    parser.add_argument('--reverse', action='store_true')
+    parser.add_argument('--transformer', action='store_true')
+    parser.add_argument('--cpc_mode', type=str, default=None,
+                        choices=['reverse', 'cloze'])
     parser.add_argument('--encoder_type', type=str,
                         choices=['cpc', 'mfcc', 'lfb'],
                         default='cpc')
     parser.add_argument('--random_seed', type=int, default=None)
+    parser.add_argument('--adversarial', action='store_true')
+    parser.add_argument('--save_step', type=int, default=5)
     args = parser.parse_args(argv)
 
     # set it up if needed, so that it is dumped along with other args
@@ -505,11 +609,9 @@ def parseArgs(argv):
     assert args.nGPU <= torch.cuda.device_count(), f"number of GPU asked: {args.nGPU}," \
         f"number GPU detected: {torch.cuda.device_count()}"
     print("Let's use", args.nGPU, "GPUs!")
-
     return args
 
 
 if __name__ == "__main__":
-    import sys
     args = sys.argv[1:]
     main(args)

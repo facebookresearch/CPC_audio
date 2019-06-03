@@ -46,7 +46,7 @@ class MFCCEncoder(nn.Module):
                  dimEncoded):
 
         super(MFCCEncoder, self).__init__()
-        melkwargs = {"n_mels": max(128, dimEncoded)}
+        melkwargs = {"n_mels": max(128, dimEncoded), "n_fft":321}
         self.MFCC = torchaudio.transforms.MFCC(n_mfcc=dimEncoded,
                                                melkwargs=melkwargs)
 
@@ -92,7 +92,8 @@ class CPCAR(nn.Module):
                  dimEncoded,
                  dimOutput,
                  keepHidden,
-                 nLevelsGRU):
+                 nLevelsGRU,
+                 reverse=False):
 
         super(CPCAR, self).__init__()
 
@@ -100,16 +101,52 @@ class CPCAR(nn.Module):
                               num_layers=nLevelsGRU, batch_first=True)
         self.hidden = None
         self.keepHidden = keepHidden
+        self.reverse = reverse
 
     def getDimOutput(self):
         return self.baseNet.hidden_size
 
     def forward(self, x):
+
+        if self.reverse:
+            x = torch.flip(x, [1])
         self.baseNet.flatten_parameters()
         x, h = self.baseNet(x, self.hidden)
         if self.keepHidden:
             self.hidden = h.detach()
+
+        # For better modularity, a sequence's order should be preserved
+        # by each module
+        if self.reverse:
+            x = torch.flip(x, [1])
         return x
+
+
+class BiDIRAR(nn.Module):
+
+    def __init__(self,
+                 dimEncoded,
+                 dimOutput,
+                 nLevelsGRU):
+
+        super(BiDIRAR, self).__init__()
+        assert(dimOutput % 2 == 0)
+
+        self.netForward = nn.GRU(dimEncoded, dimOutput // 2,
+                                 num_layers=nLevelsGRU, batch_first=True)
+        self.netBackward = nn.GRU(dimEncoded, dimOutput // 2,
+                                  num_layers=nLevelsGRU, batch_first=True)
+
+    def getDimOutput(self):
+        return self.netForward.hidden_size * 2
+
+    def forward(self, x):
+
+        self.netForward.flatten_parameters()
+        self.netBackward.flatten_parameters()
+        xf, _ = self.netForward(x)
+        xb, _ = self.netBackward(torch.flip(x, [1]))
+        return torch.cat([xf, torch.flip(xb, [1])], dim=2)
 
 
 ###########################################
@@ -121,25 +158,15 @@ class CPCModel(nn.Module):
 
     def __init__(self,
                  encoder,
-                 AR,
-                 reverse=False):
+                 AR):
 
         super(CPCModel, self).__init__()
         self.gEncoder = encoder
         self.gAR = AR
-        self.reverse = reverse
 
     def forward(self, batchData):
         encodedData = self.gEncoder(batchData).permute(0, 2, 1)
-        if self.reverse:
-            encodedData = torch.flip(encodedData, [1])
         cFeature = self.gAR(encodedData)
-
-        # For better modularity, a sequence's order should be preserved
-        # by each module
-        if self.reverse:
-            encodedData = torch.flip(encodedData, [1])
-            cFeature = torch.flip(cFeature, [1])
         return cFeature, encodedData
 
 

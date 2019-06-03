@@ -38,7 +38,7 @@ class CPCUnsupersivedCriterion(nn.Module):
                  dimOutputAR,           # Dimension of G_ar
                  dimOutputEncoder,      # Dimension of the convolutional net
                  negativeSamplingExt,   # Number of negative samples to draw
-                 reverse=False):
+                 mode = None):
 
         super(CPCUnsupersivedCriterion, self).__init__()
         self.wPrediction = PredictionNetwork(
@@ -46,7 +46,14 @@ class CPCUnsupersivedCriterion(nn.Module):
         self.nPredicts = nPredicts
         self.negativeSamplingExt = negativeSamplingExt
         self.lossCriterion = nn.CrossEntropyLoss()
-        self.reverse = reverse
+
+        if mode not in [None, "reverse", "cloze"]:
+            raise ValueError("Invalid mode")
+
+        self.mode = mode
+        if mode == "cloze" and dimOutputAR % 2 != 0:
+            raise ValueError("On cloze mode dimOutputAR should be an even\
+                              number")
 
     def sample(self, encodedData, windowSize):
 
@@ -72,6 +79,10 @@ class CPCUnsupersivedCriterion(nn.Module):
                 posSeq = encodedData[:, k:-(self.nPredicts-k)]
             else:
                 posSeq = encodedData[:, k:]
+
+            if self.mode == "cloze":
+                posSeq = posSeq[:, :-1]
+
             posSeq = posSeq.view(batchSize, 1, posSeq.size(1), dimEncoded)
             fullSeq = torch.cat((posSeq, negExt), dim=1)
             outputs.append(fullSeq)
@@ -80,21 +91,27 @@ class CPCUnsupersivedCriterion(nn.Module):
 
     def forward(self, cFeature, encodedData, *args):
 
-        if self.reverse:
+        if self.mode == "reverse":
             encodedData = torch.flip(encodedData, [1])
             cFeature = torch.flip(cFeature, [1])
 
-        # cFeature.size() : batchSize x seq Size x hidden size
-        windowSize = cFeature.size(1) - self.nPredicts
-        batchSize = cFeature.size(0)
+        batchSize, seqSize, dimAR = cFeature.size()
+        windowSize = seqSize - self.nPredicts
+
+        if self.mode == "cloze":
+            halfSize = dimAR // 2
+            windowSize -= 1
+            featureStraight = cFeature[:, :windowSize, :halfSize]
+            featureReverse = cFeature[:, self.nPredicts:-1, halfSize:]
+            cFeature = torch.cat([featureStraight, featureReverse], dim=2)
+        else:
+            cFeature = cFeature[:, :windowSize]
+
+        sampledData, labelLoss = self.sample(encodedData, windowSize)
+        predictions = self.wPrediction(cFeature, sampledData)
 
         outLosses = [0 for x in range(self.nPredicts)]
         outAcc = [0 for x in range(self.nPredicts)]
-
-        sampledData, labelLoss = self.sample(encodedData, windowSize)
-
-        cFeature = cFeature[:, :windowSize]
-        predictions = self.wPrediction(cFeature, sampledData)
 
         for k, locPreds in enumerate(predictions):
             locPreds = locPreds.permute(0, 2, 1)
@@ -143,9 +160,12 @@ class PhoneCriterion(nn.Module):
         # cFeature.size() : batchSize x seq Size x hidden size
         batchSize, seqSize = cFeature.size(0), cFeature.size(1)
         cFeature = cFeature.contiguous().view(batchSize * seqSize, -1)
-        label = label.view(-1)
-
         predictions = self.PhoneCriterionClassifier(cFeature)
-        loss = self.lossCriterion(predictions, label).view(1, -1)
-        acc = (predictions.max(1)[1] == label).double().mean().view(1, -1)
-        return loss, acc
+
+        if label is not None:
+            label = label.view(-1)
+            loss = self.lossCriterion(predictions, label).view(1, -1)
+            acc = (predictions.max(1)[1] == label).double().mean().view(1, -1)
+            return loss, acc
+        else:
+            return predictions.max(1)[1]
