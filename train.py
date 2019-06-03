@@ -221,16 +221,17 @@ def valStep(dataLoader,
 
         batchData = batchData.cuda(non_blocking=True)
         label = label.cuda(non_blocking=True)
-        cFeature, encodedData = model(batchData)
 
-        allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
+        with torch.no_grad():
+            cFeature, encodedData = model(batchData)
+            allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
 
         if "locLoss_val" not in logs:
             logs["locLoss_val"] = np.zeros(allLosses.size(1))
             logs["locAcc_val"] = np.zeros(allLosses.size(1))
 
         logs["step"] += 1
-        logs["locLoss_val"] += allLosses.mean(dim=0).detach().cpu().numpy()
+        logs["locLoss_val"] += allLosses.mean(dim=0).cpu().numpy()
         logs["locAcc_val"] += allAcc.mean(dim=0).cpu().numpy()
 
     logs["step"] = step
