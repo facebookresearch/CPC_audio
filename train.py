@@ -22,16 +22,6 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-def showGradValues(model):
-    max_ = -1
-    total_norm = 0
-    for p in model.parameters():
-        param_norm = p.grad.data.norm(2)
-        total_norm += param_norm.item() ** 2
-        max_ = max(param_norm, max_)
-    total_norm = total_norm ** (1. / 2)
-    print(total_norm, max_)
-
 
 def updateAndShowLogs(text, logs):
     logStep = logs["step"]
