@@ -38,7 +38,7 @@ class CPCUnsupersivedCriterion(nn.Module):
                  dimOutputAR,           # Dimension of G_ar
                  dimOutputEncoder,      # Dimension of the convolutional net
                  negativeSamplingExt,   # Number of negative samples to draw
-                 mode = None):
+                 mode=None):
 
         super(CPCUnsupersivedCriterion, self).__init__()
         self.wPrediction = PredictionNetwork(

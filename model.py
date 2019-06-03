@@ -46,7 +46,7 @@ class MFCCEncoder(nn.Module):
                  dimEncoded):
 
         super(MFCCEncoder, self).__init__()
-        melkwargs = {"n_mels": max(128, dimEncoded), "n_fft":321}
+        melkwargs = {"n_mels": max(128, dimEncoded), "n_fft": 321}
         self.MFCC = torchaudio.transforms.MFCC(n_mfcc=dimEncoded,
                                                melkwargs=melkwargs)
 

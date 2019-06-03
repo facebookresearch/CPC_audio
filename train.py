@@ -11,7 +11,7 @@ import torch
 from dataset import AudioBatchData
 from model import CPCModel, ConcatenatedModel
 from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, \
-                      PhoneCriterion
+    PhoneCriterion
 import psutil
 
 
@@ -186,7 +186,7 @@ def adversarialTrainStep(dataLoader, model, cpcCriterion, optimizerCPC,
     speakerCriterion.train()
     cpcCriterion.train()
 
-    logs = {"step": 0, "loss_train_speak":0, "acc_train_speak": 0}
+    logs = {"step": 0, "loss_train_speak": 0, "acc_train_speak": 0}
     for step, fulldata in enumerate(dataLoader):
 
         optimizerCPC.zero_grad()
@@ -205,7 +205,8 @@ def adversarialTrainStep(dataLoader, model, cpcCriterion, optimizerCPC,
             logs["locAcc_train_cpc"] = np.zeros(allLosses.size(1))
 
         logs["step"] += 1
-        logs["locLoss_train_cpc"] += (allLosses.mean(dim=0)).detach().cpu().numpy()
+        logs["locLoss_train_cpc"] += (allLosses.mean(dim=0)
+                                      ).detach().cpu().numpy()
         logs["locAcc_train_cpc"] += (allAcc.mean(dim=0)).cpu().numpy()
 
         totLoss = (allLosses - lossSpeak).sum()
@@ -217,7 +218,8 @@ def adversarialTrainStep(dataLoader, model, cpcCriterion, optimizerCPC,
         totLoss.backward()
         optimizerPhone.step()
 
-        logs["loss_train_speak"] += (lossSpeak.mean(dim=0)).detach().cpu().numpy()
+        logs["loss_train_speak"] += (lossSpeak.mean(dim=0)
+                                     ).detach().cpu().numpy()
         logs["acc_train_speak"] += (accSpeak.mean(dim=0)).cpu().numpy()
 
     updateAndShowLogs("Update %d, training loss:" %
@@ -425,8 +427,8 @@ def main(args):
             print(f"Loading checkpoint {path}")
             _, _, locArgs = getCheckpointData(os.path.dirname(path))
             transferArgs(args, locArgs,
-                        ["hiddenEncoder", "hiddenGar", "nLevelsGRU",
-                         "transformer", "encoder_type", "cpc_mode"])
+                         ["hiddenEncoder", "hiddenGar", "nLevelsGRU",
+                          "transformer", "encoder_type", "cpc_mode"])
             encoderNet = getEncoder(args.encoder_type, args.hiddenEncoder)
             arNet = getAR(args)
             state_dict = torch.load(path)
