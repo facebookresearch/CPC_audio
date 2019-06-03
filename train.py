@@ -383,13 +383,8 @@ def main(args):
         arNet = getAR(args)
         cpcModel = CPCModel(encoderNet, arNet, args.reverse)
 
-    if args.nGPU < 0:
-        args.nGPU = torch.cuda.device_count()
-    assert args.nGPU <= torch.cuda.device_count(), f"number of GPU asked: {args.nGPU}," \
-        f"number GPU detected: {torch.cuda.device_count()}"
-
     batchSize = args.nGPU * args.batchSizeGPU
-    print("Let's use", args.nGPU, "GPUs!")
+
     cpcModel = torch.nn.DataParallel(cpcModel, device_ids=range(args.nGPU))
 
     # Training criterion
@@ -504,6 +499,12 @@ def parseArgs(argv):
     # set it up if needed, so that it is dumped along with other args
     if args.random_seed is None:
         args.random_seed = random.randint(0, 2**31)
+
+    if args.nGPU < 0:
+        args.nGPU = torch.cuda.device_count()
+    assert args.nGPU <= torch.cuda.device_count(), f"number of GPU asked: {args.nGPU}," \
+        f"number GPU detected: {torch.cuda.device_count()}"
+    print("Let's use", args.nGPU, "GPUs!")
 
     return args
 
