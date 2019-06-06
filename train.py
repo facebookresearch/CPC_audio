@@ -2,13 +2,12 @@ import argparse
 import json
 import os
 import random
-import sys
 from termcolor import colored
 
 import numpy as np
 import torch
 
-from dataset import AudioBatchData
+from dataset import AudioBatchData, findAllSeqs, filterSeqs
 from model import CPCModel, ConcatenatedModel
 from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, \
     PhoneCriterion, ModelCriterionCombined
@@ -107,51 +106,6 @@ def getCheckpointData(pathDir):
         args = json.load(file)
 
     return data, logs, args
-
-
-def findAllSeqs(dirName,
-                recursionLevel=2,
-                extension='.flac'):
-
-    dirName = os.path.join(dirName, '')
-    dirList = [dirName]
-    prefixSize = len(dirName)
-    speakers = set([])
-
-    for recursion in range(recursionLevel):
-        nextList = []
-        for item in dirList:
-            nextList += [os.path.join(item, f) for f in os.listdir(item)
-                         if os.path.isdir(os.path.join(item, f))]
-        dirList = nextList
-
-    outSequences = []
-    for directory in dirList:
-        basePath = directory[prefixSize:]
-        speaker = int(os.path.normpath(basePath).split(os.sep)[0])
-        speakers.add(speaker)
-        for item in os.listdir(directory):
-            if os.path.splitext(item)[1] != extension:
-                continue
-            outSequences.append((speaker, os.path.join(basePath, item)))
-
-    return outSequences, speakers
-
-
-def filterSeqs(pathTxt, seqCouples):
-    inSeqs = [p.replace('\n', '') for p in open(pathTxt, 'r').readlines()]
-    inSeqs.sort()
-    seqCouples.sort(key=lambda x: x[1])
-    output, index = [], 0
-    for x in seqCouples:
-        seq = os.path.basename(os.path.splitext(x[1])[0])
-        while index < len(inSeqs) and seq > inSeqs[index]:
-            index += 1
-        if index == len(inSeqs):
-            break
-        if seq == inSeqs[index]:
-            output.append(x)
-    return output
 
 
 def parseSeqLabels(pathLabels):

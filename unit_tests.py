@@ -1,7 +1,6 @@
 import unittest
 import torch
-from train import findAllSeqs, filterSeqs
-from dataset import AudioBatchData
+from dataset import AudioBatchData, findAllSeqs, filterSeqs
 from nose.tools import eq_
 
 
