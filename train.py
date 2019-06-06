@@ -11,7 +11,7 @@ import torch
 from dataset import AudioBatchData
 from model import CPCModel, ConcatenatedModel
 from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, \
-    PhoneCriterion
+    PhoneCriterion, ModelCriterionCombined
 import psutil
 
 
@@ -171,24 +171,22 @@ def cpuStats():
     print(psutil.virtual_memory())
 
 
-def trainStep(dataLoader,
-              model,
-              cpcCriterion,
+def trainStep(model_criterion_combined,
+              model_criterion,
               optimizer):
 
-    if model.optimize:
-        model.train()
-    cpcCriterion.train()
+    if model_criterion.module.model.optimize:
+        model_criterion.module.model.train()
+    model_criterion.module.criterion.train()
 
     logs = {"step": 0}
-    for step, fulldata in enumerate(dataLoader):
+    for step, fulldata in enumerate(model_criterion_combined):
 
         batchData, label = fulldata
         batchData = batchData.cuda(non_blocking=True)
         label = label.cuda(non_blocking=True)
-        cFeature, encodedData = model(batchData)
 
-        allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
+        allLosses, allAcc = model_criterion(batchData, label)
 
         totLoss = allLosses.sum()
         totLoss.backward()
@@ -209,10 +207,8 @@ def trainStep(dataLoader,
 
 
 def valStep(dataLoader,
-            model,
-            cpcCriterion):
-    model.eval()
-    cpcCriterion.eval()
+            model_criterion):
+    model_criterion.eval()
 
     logs = {"step": 0}
     for step, fulldata in enumerate(dataLoader):
@@ -222,9 +218,7 @@ def valStep(dataLoader,
         batchData = batchData.cuda(non_blocking=True)
         label = label.cuda(non_blocking=True)
 
-        with torch.no_grad():
-            cFeature, encodedData = model(batchData)
-            allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
+        allLosses, allAcc = model_criterion(batchData, label)
 
         if "locLoss_val" not in logs:
             logs["locLoss_val"] = np.zeros(allLosses.size(1))
@@ -241,8 +235,7 @@ def valStep(dataLoader,
 
 def run(trainLoader,
         valLoader,
-        cpcModel,
-        cpcCriterion,
+        model_criterion,
         nEpoch,
         pathCheckpoint,
         optimizer,
@@ -261,15 +254,15 @@ def run(trainLoader,
         cpuStats()
 
         locLogsTrain = trainStep(
-            trainLoader, cpcModel, cpcCriterion, optimizer)
+            trainLoader, model_criterion, optimizer)
 
-        locLogsVal = valStep(valLoader, cpcModel, cpcCriterion)
+        locLogsVal = valStep(valLoader, model_criterion)
 
         torch.cuda.empty_cache()
 
         currentAccuracy = float(locLogsVal["locAcc_val"].mean())
         if currentAccuracy > bestAcc:
-            bestStateDict = cpcModel.module.state_dict()
+            bestStateDict = model_criterion.module.model.state_dict()
 
         for key, value in dict(locLogsTrain, **locLogsVal).items():
             if key not in logs:
@@ -283,8 +276,8 @@ def run(trainLoader,
         if pathCheckpoint is not None \
                 and (epoch % 5 == 0 or epoch == nEpoch-1):
             print(pathCheckpoint)
-            stateDict = {"gEncoder": cpcModel.module.state_dict(),
-                         "cpcCriterion": cpcCriterion.state_dict(),
+            stateDict = {"gEncoder": model_criterion.module.model.state_dict(),
+                         "cpcCriterion": model_criterion.module.criterion.state_dict(),
                          "optimizer": optimizer.state_dict(),
                          "best": bestStateDict}
 
@@ -385,8 +378,6 @@ def main(args):
 
     batchSize = args.nGPU * args.batchSizeGPU
 
-    cpcModel = torch.nn.DataParallel(cpcModel, device_ids=range(args.nGPU))
-
     # Training criterion
     if not args.supervised:
         cpcCriterion = CPCUnsupersivedCriterion(args.nPredicts, args.hiddenGar,
@@ -399,8 +390,6 @@ def main(args):
         cpcCriterion = SpeakerCriterion(args.hiddenGar,
                                         len(speakers))
 
-    cpcCriterion = torch.nn.DataParallel(cpcCriterion,
-                                         device_ids=range(args.nGPU))
     cpcModel.optimize = True
     if args.eval:
         print("Evaluation mode")
@@ -408,9 +397,6 @@ def main(args):
         cpcModel.eval()
         for g in cpcModel.parameters():
             g.requires_grad = False
-
-    cpcCriterion.cuda()
-    cpcModel.cuda()
 
     # Optimizer
     g_params = list(cpcCriterion.parameters())
@@ -442,10 +428,13 @@ def main(args):
                                              numWorkers=0)
     valLoader = valDataset.getDataLoader(batchSize, 'sequential', False,
                                          numWorkers=0)
+
+    model_criterion = ModelCriterionCombined(cpcModel, cpcCriterion)
+    model_criterion = torch.nn.DataParallel(model_criterion, device_ids=range(args.nGPU)).cuda()
+
     run(trainLoader,
         valLoader,
-        cpcModel,
-        cpcCriterion,
+        model_criterion,
         args.nEpoch,
         args.pathCheckpoint,
         optimizer,

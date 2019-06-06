@@ -53,7 +53,7 @@ class CPCUnsupersivedCriterion(nn.Module):
         batchSize, nNegativeExt, dimEncoded = encodedData.size()
         outputs = []
 
-        negExt = encodedData.view(-1, dimEncoded)
+        negExt = encodedData.contiguous().view(-1, dimEncoded)
         # Draw nNegativeExt * batchSize negative samples anywhere in the batch
         extIdx = np.random.randint(0, nNegativeExt * batchSize,
                                    size=(self.negativeSamplingExt
@@ -102,10 +102,9 @@ class CPCUnsupersivedCriterion(nn.Module):
             lossK = self.lossCriterion(locPreds, labelLoss)
             outLosses[k] += lossK.view(1, -1)
             _, predsIndex = locPreds.max(1)
-            outAcc[k] += torch.sum(predsIndex == labelLoss).double(
-            ).view(1, -1) / (windowSize * batchSize)
+            outAcc[k] += torch.sum(predsIndex == labelLoss).float().view(1, -1)
 
-        return torch.cat(outLosses, dim=1), torch.cat(outAcc, dim=1)
+        return torch.cat(outLosses, dim=1), torch.cat(outAcc, dim=1) / (windowSize * batchSize)
 
 
 class SpeakerCriterion(nn.Module):
@@ -148,4 +147,16 @@ class PhoneCriterion(nn.Module):
         predictions = self.PhoneCriterionClassifier(cFeature)
         loss = self.lossCriterion(predictions, label).view(1, -1)
         acc = (predictions.max(1)[1] == label).double().mean().view(1, -1)
+        return loss, acc
+
+
+class ModelCriterionCombined(torch.nn.Module):
+    def __init__(self, model, criterion):
+        super(ModelCriterionCombined, self).__init__()
+        self.model = model
+        self.criterion = criterion
+
+    def forward(self, data, label):
+        c_feature, encoded_data = self.model(data)
+        loss, acc = self.criterion(c_feature, encoded_data, label)
         return loss, acc
