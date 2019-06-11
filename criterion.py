@@ -142,12 +142,15 @@ class PhoneCriterion(nn.Module):
         # cFeature.size() : batchSize x seq Size x hidden size
         batchSize, seqSize = cFeature.size(0), cFeature.size(1)
         cFeature = cFeature.contiguous().view(batchSize * seqSize, -1)
-        label = label.view(-1)
-
         predictions = self.PhoneCriterionClassifier(cFeature)
-        loss = self.lossCriterion(predictions, label).view(1, -1)
-        acc = (predictions.max(1)[1] == label).double().mean().view(1, -1)
-        return loss, acc
+
+        if label is not None:
+            label = label.view(-1)
+            loss = self.lossCriterion(predictions, label).view(1, -1)
+            acc = (predictions.max(1)[1] == label).double().mean().view(1, -1)
+            return loss, acc
+        else:
+            return predictions
 
 
 class ModelCriterionCombined(torch.nn.Module):
