@@ -104,9 +104,9 @@ def toOneHot(inputVector, nItems):
     return out
 
 
-class ModelCriterionCombined(torch.nn.Module):
+class ModelPhoneCombined(torch.nn.Module):
     def __init__(self, model, criterion, nPhones, oneHot):
-        super(ModelCriterionCombined, self).__init__()
+        super(ModelPhoneCombined, self).__init__()
         self.model = model
         self.criterion = criterion
         self.nPhones = nPhones
@@ -187,7 +187,7 @@ if __name__ == "__main__":
 
     if args.addCriterion:
         criterion, nPhones = loadCriterion(args.pathCheckpoint)
-        featureMaker = ModelCriterionCombined(featureMaker, criterion,
+        featureMaker = ModelPhoneCombined(featureMaker, criterion,
                                               nPhones, args.oneHot)
 
     featureMaker = featureMaker.cuda()
