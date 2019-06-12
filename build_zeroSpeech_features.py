@@ -50,7 +50,8 @@ def buildFeature(featureMaker,
             break
         end = min(sizeSeq, start + maxSizeSeq)
         subseq = (seq[:, start:end]).view(1, 1, -1).cuda()
-        features, _, _ = featureMaker(subseq, None)
+        with torch.no_grad():
+             features, _, _ = featureMaker(subseq, None)
         out.append(features.detach().cpu())
         start += maxSizeSeq
 
