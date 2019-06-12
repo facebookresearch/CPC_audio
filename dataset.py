@@ -415,7 +415,10 @@ def findAllSeqs(dirName,
     outSequences = []
     for directory in dirList:
         basePath = directory[prefixSize:]
-        speaker = int(os.path.normpath(basePath).split(os.sep)[0])
+        try:
+            speaker = int(os.path.normpath(basePath).split(os.sep)[0])
+        except ValueError:
+            speaker = 0
         speakers.add(speaker)
         for item in os.listdir(directory):
             if os.path.splitext(item)[1] != extension:

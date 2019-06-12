@@ -2,7 +2,6 @@ import argparse
 import json
 import os
 import random
-from termcolor import colored
 
 import numpy as np
 import torch
@@ -14,12 +13,45 @@ from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, \
 import psutil
 
 
+def loadModel(pathCheckpoints, loadStateDict=True):
+    models = []
+    hiddenGar, hiddenEncoder = 0, 0
+    for path in pathCheckpoints:
+        print(f"Loading checkpoint {path}")
+        _, _, locArgs = getCheckpointData(os.path.dirname(path))
+        locArgs = argparse.Namespace(**locArgs)
+
+        if locArgs.load is not None and len(locArgs.load) > 1:
+            m_, hg, he = loadModel(locArgs.load, loadStateDict=False)
+            hiddenGar += hg
+            hiddenEncoder += he
+        else:
+            encoderNet = getEncoder(locArgs.encoder_type,
+                                    locArgs.hiddenEncoder)
+            arNet = getAR(locArgs)
+            m_ = CPCModel(encoderNet, arNet)
+
+        if loadStateDict:
+            state_dict = torch.load(path)
+            m_.load_state_dict(state_dict["gEncoder"])
+            hiddenGar += locArgs.hiddenGar
+            hiddenEncoder += locArgs.hiddenEncoder
+
+        models.append(m_)
+
+    if len(models) == 1:
+        return models[0], hiddenGar, hiddenEncoder
+
+    return ConcatenatedModel(models), hiddenGar, hiddenEncoder
+
+
 def set_seed(seed):
     random.seed(seed)
     torch.manual_seed(seed)
     np.random.seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
 
 def updateAndShowLogs(text, logs, nPredicts):
     logStep = logs["step"]
@@ -172,7 +204,8 @@ def valStep(dataLoader,
         batchData = batchData.cuda(non_blocking=True)
         label = label.cuda(non_blocking=True)
 
-        allLosses, allAcc = model_criterion(batchData, label)
+        with torch.no_grad():
+            allLosses, allAcc = model_criterion(batchData, label)
 
         if "locLoss_val" not in logs:
             logs["locLoss_val"] = np.zeros(allLosses.size(1))
@@ -297,31 +330,8 @@ def main(args):
                                 list(speakers))
 
     if args.load is not None:
-        models = []
-        hiddenGar, hiddenEncoder = 0, 0
-        for path in args.load:
-            print(f"Loading checkpoint {path}")
-            _, _, locArgs = getCheckpointData(os.path.dirname(path))
-            transferArgs(args, locArgs,
-                        ["hiddenEncoder", "hiddenGar", "nLevelsGRU",
-                         "transformer", "encoder_type", "reverse"])
-            encoderNet = getEncoder(args.encoder_type, args.hiddenEncoder)
-            arNet = getAR(args)
-            state_dict = torch.load(path)
-            m_ = CPCModel(encoderNet, arNet, args.reverse)
-            m_.load_state_dict(state_dict["gEncoder"])
-            models.append(m_)
-            hiddenGar += locArgs["hiddenGar"]
-            hiddenEncoder += locArgs["hiddenEncoder"]
-        if len(models) == 1:
-            cpcModel = models[0]
-        else:
-            if not args.eval:
-                print(colored(f'WARNING: concatenated models not fit for \
-                              training mode', 'red'))
-            cpcModel = ConcatenatedModel(models)
-        args.hiddenGar = hiddenGar
-        args.hiddenEncoder = hiddenEncoder
+        cpcModel, args.hiddenGar, args.hiddenEncoder = \
+            loadModel(args.load)
     else:
         # Encoder network
         encoderNet = getEncoder(args.encoder_type, args.hiddenEncoder)
@@ -384,7 +394,8 @@ def main(args):
                                          numWorkers=0)
 
     model_criterion = ModelCriterionCombined(cpcModel, cpcCriterion)
-    model_criterion = torch.nn.DataParallel(model_criterion, device_ids=range(args.nGPU)).cuda()
+    model_criterion = torch.nn.DataParallel(
+        model_criterion, device_ids=range(args.nGPU)).cuda()
 
     run(trainLoader,
         valLoader,
