@@ -13,18 +13,13 @@ from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, \
 import psutil
 
 
-class Struct:
-    def __init__(self, **entries):
-        self.__dict__.update(entries)
-
-
 def loadModel(pathCheckpoints, loadStateDict=True):
     models = []
     hiddenGar, hiddenEncoder = 0, 0
     for path in pathCheckpoints:
         print(f"Loading checkpoint {path}")
         _, _, locArgs = getCheckpointData(os.path.dirname(path))
-        locArgs = Struct(**locArgs)
+        locArgs = argparse.Namespace(**locArgs)
 
         if locArgs.load is not None and len(locArgs.load) > 1:
             m_, hg, he = loadModel(locArgs.load, loadStateDict=False)
@@ -56,6 +51,7 @@ def set_seed(seed):
     np.random.seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
 
 def updateAndShowLogs(text, logs, nPredicts):
     logStep = logs["step"]
@@ -398,7 +394,8 @@ def main(args):
                                          numWorkers=0)
 
     model_criterion = ModelCriterionCombined(cpcModel, cpcCriterion)
-    model_criterion = torch.nn.DataParallel(model_criterion, device_ids=range(args.nGPU)).cuda()
+    model_criterion = torch.nn.DataParallel(
+        model_criterion, device_ids=range(args.nGPU)).cuda()
 
     run(trainLoader,
         valLoader,
