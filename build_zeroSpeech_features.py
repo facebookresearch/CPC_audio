@@ -193,4 +193,4 @@ if __name__ == "__main__":
     featureMaker = featureMaker.cuda()
 
     buildAllFeature(featureMaker, args.pathDB, args.pathOut,  outData, 0.01,
-                    strict=params["strictFeatures"],maxSizeSeq=params["MAX_SIZE_SEQ"])
+                    strict=params["strictFeatures"], maxSizeSeq=params["MAX_SIZE_SEQ"])
