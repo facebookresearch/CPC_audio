@@ -429,7 +429,9 @@ def findAllSeqs(dirName,
 
 
 def filterSeqs(pathTxt, seqCouples):
-    inSeqs = [p.replace('\n', '') for p in open(pathTxt, 'r').readlines()]
+    with open(pathTxt, 'r') as f:
+        inSeqs = [p.replace('\n', '') for p in f.readlines()]
+
     inSeqs.sort()
     seqCouples.sort(key=lambda x: x[1])
     output, index = [], 0

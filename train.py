@@ -141,7 +141,8 @@ def getCheckpointData(pathDir):
 
 
 def parseSeqLabels(pathLabels):
-    lines = open(pathLabels, 'r').readlines()
+    with open(pathLabels, 'r') as f:
+        lines = f.readlines()
     output = {"step": 160}  # Step in librispeech dataset is 160bits
     maxPhone = 0
     for line in lines:
