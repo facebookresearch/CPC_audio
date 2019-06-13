@@ -60,7 +60,7 @@ class CPCUnsupersivedCriterion(nn.Module):
         batchSize, nNegativeExt, dimEncoded = encodedData.size()
         outputs = []
 
-        negExt = encodedData.view(-1, dimEncoded)
+        negExt = encodedData.contiguous().view(-1, dimEncoded)
         # Draw nNegativeExt * batchSize negative samples anywhere in the batch
         extIdx = np.random.randint(0, nNegativeExt * batchSize,
                                    size=(self.negativeSamplingExt
@@ -119,10 +119,9 @@ class CPCUnsupersivedCriterion(nn.Module):
             lossK = self.lossCriterion(locPreds, labelLoss)
             outLosses[k] += lossK.view(1, -1)
             _, predsIndex = locPreds.max(1)
-            outAcc[k] += torch.sum(predsIndex == labelLoss).double(
-            ).view(1, -1) / (windowSize * batchSize)
+            outAcc[k] += torch.sum(predsIndex == labelLoss).float().view(1, -1)
 
-        return torch.cat(outLosses, dim=1), torch.cat(outAcc, dim=1)
+        return torch.cat(outLosses, dim=1), torch.cat(outAcc, dim=1) / (windowSize * batchSize)
 
 
 class CPCBertCriterion(nn.Module):
@@ -210,14 +209,25 @@ class PhoneCriterion(nn.Module):
     def forward(self, cFeature, otherEncoded, label):
 
         # cFeature.size() : batchSize x seq Size x hidden size
+        predictions = self.getPrediction(cFeature)
+        label = label.view(-1)
+        loss = self.lossCriterion(predictions, label).view(1, -1)
+        acc = (predictions.max(1)[1] == label).double().mean().view(1, -1)
+        return loss, acc
+
+    def getPrediction(self, cFeature):
         batchSize, seqSize = cFeature.size(0), cFeature.size(1)
         cFeature = cFeature.contiguous().view(batchSize * seqSize, -1)
-        predictions = self.PhoneCriterionClassifier(cFeature)
+        return self.PhoneCriterionClassifier(cFeature)
 
-        if label is not None:
-            label = label.view(-1)
-            loss = self.lossCriterion(predictions, label).view(1, -1)
-            acc = (predictions.max(1)[1] == label).double().mean().view(1, -1)
-            return loss, acc
-        else:
-            return predictions
+
+class ModelCriterionCombined(torch.nn.Module):
+    def __init__(self, model, criterion):
+        super(ModelCriterionCombined, self).__init__()
+        self.model = model
+        self.criterion = criterion
+
+    def forward(self, data, label):
+        c_feature, encoded_data, label = self.model(data, label)
+        loss, acc = self.criterion(c_feature, encoded_data, label)
+        return loss, acc

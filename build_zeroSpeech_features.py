@@ -1,44 +1,14 @@
 import torchaudio
 import os
 import json
-from train import findAllSeqs, loadModel
+from train import loadModel
+from dataset import findAllSeqs
 import torch
-
+import progressbar
 import argparse
 
-def printProgressBar(iteration,
-                     total,
-                     prefix='',
-                     suffix='',
-                     decimals=1,
-                     length=100,
-                     fill='#'):
-    """
-    Call in a loop to create terminal progress bar
-    @params:
-        iteration   - Required  : current iteration (Int)
-        total       - Required  : total iterations (Int)
-        prefix      - Optional  : prefix string (Str)
-        suffix      - Optional  : suffix string (Str)
-        decimals    - Optional  : positive number of decimals in percent
-                                  complete (Int)
-        length      - Optional  : character length of bar (Int)
-        fill        - Optional  : bar fill character (Str)
-    """
-    percent = ("{0:." + str(decimals) + "f}").format(100 *
-                                                     (iteration / float(total)))
-    filledLength = int(length * iteration // total)
-    bar = fill * filledLength + '-' * (length - filledLength)
-    print('\r%s |%s| %s%% %s' % (prefix, bar, percent, suffix), end='\r')
-    # Print New Line on Complete
-    if iteration == total:
-        print()
 
-
-def buildFeature(featureMaker,
-                 seqPath,
-                 strict=False,
-                 maxSizeSeq=64000):
+def buildFeature(featureMaker, seqPath, strict=False, maxSizeSeq=64000):
 
     seq = torchaudio.load(seqPath)[0]
     sizeSeq = seq.size(1)
@@ -49,7 +19,8 @@ def buildFeature(featureMaker,
             break
         end = min(sizeSeq, start + maxSizeSeq)
         subseq = (seq[:, start:end]).view(1, 1, -1).cuda()
-        features, _, _ = featureMaker(subseq, None)
+        with torch.no_grad():
+            features, _, _ = featureMaker(subseq, None)
         out.append(features.detach().cpu())
         start += maxSizeSeq
 
@@ -69,13 +40,15 @@ def getArgs(pathCheckpoints):
 
 
 def buildAllFeature(featureMaker, pathDB, pathOut,
-                    seqList, stepSize, strict=False,
+                    seqList, stepSize=0.01, strict=False,
                     maxSizeSeq=64000):
 
     totSeqs = len(seqList)
     startStep = stepSize / 2
+    bar = progressbar.ProgressBar(maxval=totSeqs)
+    bar.start()
     for nseq, seqPath in enumerate(seqList):
-        printProgressBar(nseq, totSeqs)
+        bar.update(nseq)
         feature = buildFeature(featureMaker,
                                os.path.join(pathDB, seqPath),
                                strict=strict,
@@ -91,8 +64,7 @@ def buildAllFeature(featureMaker, pathDB, pathOut,
                 line = [str(x) for x in line]
                 linestr = ' '.join(line) + '\n'
                 file.write(linestr)
-
-    printProgressBar(totSeqs, totSeqs)
+    bar.finish()
 
 
 def toOneHot(inputVector, nItems):
@@ -103,20 +75,20 @@ def toOneHot(inputVector, nItems):
     return out
 
 
-class ModelCriterionCombined(torch.nn.Module):
+class ModelPhoneCombined(torch.nn.Module):
     def __init__(self, model, criterion, nPhones, oneHot):
-        super(ModelCriterionCombined, self).__init__()
+        super(ModelPhoneCombined, self).__init__()
         self.model = model
         self.criterion = criterion
         self.nPhones = nPhones
         self.oneHot = oneHot
 
     def forward(self, data, label):
-        c_feature, encoded_data, _ = self.model(data, None)
-        pred = self.criterion(c_feature, encoded_data, label)
+        c_feature, _, _ = self.model(data, label)
+        pred = self.criterion.getPrediction(c_feature)
 
         if self.oneHot:
-            pred = pred.max(1)[1]
+            pred = pred.argmax(dim=1)
             pred = toOneHot(pred, self.nPhones)
         else:
             pred = torch.nn.functional.softmax(pred, dim=1)
@@ -127,7 +99,7 @@ def loadCriterion(pathCheckpoint):
     from criterion import PhoneCriterion
     from train import parseSeqLabels, getCheckpointData
 
-    _, _, args = getCheckpointData(os.path.dirname(pathCheckpoint))
+    *_, args = getCheckpointData(os.path.dirname(pathCheckpoint))
     _, nPhones = parseSeqLabels(args["pathPhone"])
     criterion = PhoneCriterion(args["hiddenGar"], nPhones)
 
@@ -138,29 +110,26 @@ def loadCriterion(pathCheckpoint):
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser('Build features for zerospeech2015 \
+    parser = argparse.ArgumentParser('Build features for zerospeech \
                                       Track1 evaluation')
     parser.add_argument('pathDB', help='Path to the reference dataset')
     parser.add_argument('pathOut', help='Path to the output features')
     parser.add_argument('pathCheckpoint', help='Checkpoint to load')
-    parser.add_argument('--seqList', help='Sequence to analyze',
+    parser.add_argument('--seqList', help='Sequences to analyze',
                         type=str, default=None)
     parser.add_argument('--recursionLevel', type=int, default=1)
     parser.add_argument('--addCriterion', action='store_true')
     parser.add_argument('--oneHot', action='store_true')
-
-    # typical arguments
-    # pathDB="/private/home/mriviere/Buckeye"
-    # pathOut="/private/home/mriviere/FairInternal/CPC_torch/ZeroSpeech/buckeye_samespeaker_seuquencial/outFeatures195"
-    # pathCheckpoint="/private/home/mriviere/FairInternal/CPC_torch/ZeroSpeech/buckeye_samespeaker_seuquencial/checkpoint_195.pt"
-    # seqList="/private/home/mriviere/Buckeye/zeroSpeechSet.txt"
+    parser.add_argument('--maxSizeSeq', default=64000, type=int)
 
     args = parser.parse_args()
 
     if not os.path.isdir(args.pathOut):
         os.mkdir(args.pathOut)
 
-    with open(os.path.join(os.path.dirname(args.pathOut), f"{os.path.basename(args.pathOut)}.json"), 'w') as file:
+    with open(os.path.join(os.path.dirname(args.pathOut),
+                           f"{os.path.basename(args.pathOut)}.json"), 'w') \
+            as file:
         json.dump(vars(args), file, indent=2)
 
     seqList = [x[1] for x in
@@ -188,18 +157,15 @@ if __name__ == "__main__":
                     filterNames[indexSeqList] == item:
                 outData.append(value)
 
-    params = {"strictFeatures": False, "MAX_SIZE_SEQ": 64000}
-    modelList = []
-
     featureMaker = loadModel([args.pathCheckpoint])[0]
-    featureMaker.supervised = True
 
     if args.addCriterion:
         criterion, nPhones = loadCriterion(args.pathCheckpoint)
-        featureMaker = ModelCriterionCombined(featureMaker, criterion,
-                                              nPhones, args.oneHot)
+        featureMaker = ModelPhoneCombined(featureMaker, criterion,
+                                          nPhones, args.oneHot)
 
     featureMaker = featureMaker.cuda()
+    featureMaker.eval()
 
-    buildAllFeature(featureMaker, args.pathDB, args.pathOut,  outData, 0.01,
-                    strict=params["strictFeatures"],maxSizeSeq=params["MAX_SIZE_SEQ"])
+    buildAllFeature(featureMaker, args.pathDB, args.pathOut,  outData,
+                    stepSize=0.01, strict=False, maxSizeSeq=args.maxSizeSeq)

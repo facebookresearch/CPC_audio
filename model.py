@@ -273,7 +273,7 @@ class ConcatenatedModel(nn.Module):
         outFeatures = []
         outEncoded = []
         for model in self.models:
-            cFeature, encodedData, label = model(batchData, label)
+            cFeature, encodedData = model(batchData)
             outFeatures.append(cFeature)
             outEncoded.append(encodedData)
         return torch.cat(outFeatures, dim=2), torch.cat(outEncoded, dim=2), label

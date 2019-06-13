@@ -2,20 +2,52 @@ import argparse
 import json
 import os
 import random
-import sys
 import numpy as np
 import torch
 
-from dataset import AudioBatchData
+from dataset import AudioBatchData, findAllSeqs, filterSeqs
 from model import CPCModel, ConcatenatedModel, CPCBertModel
 from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, \
-    PhoneCriterion, CPCBertCriterion
+    PhoneCriterion, ModelCriterionCombined, CPCBertCriterion
 import psutil
+import sys
 
 
-class Struct:
-    def __init__(self, **entries):
-        self.__dict__.update(entries)
+def loadModel(pathCheckpoints, loadStateDict=True):
+    models = []
+    hiddenGar, hiddenEncoder = 0, 0
+    for path in pathCheckpoints:
+        print(f"Loading checkpoint {path}")
+        _, _, locArgs = getCheckpointData(os.path.dirname(path))
+        locArgs = argparse.Namespace(**locArgs)
+
+        if locArgs.load is not None and len(locArgs.load) > 1:
+            m_, hg, he = loadModel(locArgs.load, loadStateDict=False)
+            hiddenGar += hg
+            hiddenEncoder += he
+        else:
+            encoderNet = getEncoder(locArgs.encoder_type,
+                                    locArgs.hiddenEncoder)
+            arNet = getAR(locArgs)
+            if locArgs.cpc_mode == "bert":
+                m_ = CPCBertModel(encoderNet, arNet,
+                                  blockSize=locArgs.nPredicts)
+                m_.supervised = locArgs.supervised
+            else:
+                m_ = CPCModel(encoderNet, arNet)
+
+        if loadStateDict:
+            state_dict = torch.load(path)
+            m_.load_state_dict(state_dict["gEncoder"])
+            hiddenGar += locArgs.hiddenGar
+            hiddenEncoder += locArgs.hiddenEncoder
+
+        models.append(m_)
+
+    if len(models) == 1:
+        return models[0], hiddenGar, hiddenEncoder
+
+    return ConcatenatedModel(models), hiddenGar, hiddenEncoder
 
 
 def set_seed(seed):
@@ -53,42 +85,6 @@ def updateAndShowLogs(text, logs):
 def saveLogs(data, pathLogs):
     with open(pathLogs, 'w') as file:
         json.dump(data, file, indent=2)
-
-
-def loadModel(pathCheckpoints, loadStateDict=True):
-    models = []
-    hiddenGar, hiddenEncoder = 0, 0
-    for path in pathCheckpoints:
-        print(f"Loading checkpoint {path}")
-        _, _, locArgs = getCheckpointData(os.path.dirname(path))
-        locArgs = argparse.Namespace(**locArgs)
-
-        if locArgs.load is not None and len(locArgs.load) > 1:
-            m_, hg, he = loadModel(locArgs.load, loadStateDict=False)
-            hiddenGar += hg
-            hiddenEncoder += he
-        else:
-            encoderNet = getEncoder(locArgs.encoder_type, locArgs.hiddenEncoder)
-            arNet = getAR(locArgs)
-            if locArgs.cpc_mode == "bert":
-                m_ = CPCBertModel(encoderNet, arNet,
-                                        blockSize=locArgs.nPredicts)
-                m_.supervised = locArgs.supervised
-            else:
-                m_ = CPCModel(encoderNet, arNet)
-
-        if loadStateDict:
-            state_dict = torch.load(path)
-            m_.load_state_dict(state_dict["gEncoder"])
-            hiddenGar += locArgs.hiddenGar
-            hiddenEncoder += locArgs.hiddenEncoder
-
-        models.append(m_)
-
-    if len(models) == 1:
-        return models[0], hiddenGar, hiddenEncoder
-
-    return ConcatenatedModel(models), hiddenGar, hiddenEncoder
 
 
 def getEncoder(encoderType, hiddenEncoder):
@@ -157,56 +153,9 @@ def getCheckpointData(pathDir):
     return data, logs, args
 
 
-def findAllSeqs(dirName,
-                recursionLevel=2,
-                extension='.flac'):
-
-    dirName = os.path.join(dirName, '')
-    dirList = [dirName]
-    prefixSize = len(dirName)
-    speakers = set([])
-
-    for recursion in range(recursionLevel):
-        nextList = []
-        for item in dirList:
-            nextList += [os.path.join(item, f) for f in os.listdir(item)
-                         if os.path.isdir(os.path.join(item, f))]
-        dirList = nextList
-
-    outSequences = []
-    for directory in dirList:
-        basePath = directory[prefixSize:]
-        try:
-            speaker = int(os.path.normpath(basePath).split(os.sep)[0])
-        except ValueError:
-            speaker =0
-        speakers.add(speaker)
-        for item in os.listdir(directory):
-            if os.path.splitext(item)[1] != extension:
-                continue
-            outSequences.append((speaker, os.path.join(basePath, item)))
-
-    return outSequences, speakers
-
-
-def filterSeqs(pathTxt, seqCouples):
-    inSeqs = [p.replace('\n', '') for p in open(pathTxt, 'r').readlines()]
-    inSeqs.sort()
-    seqCouples.sort(key=lambda x: x[1])
-    output, index = [], 0
-    for x in seqCouples:
-        seq = os.path.basename(os.path.splitext(x[1])[0])
-        while index < len(inSeqs) and seq > inSeqs[index]:
-            index += 1
-        if index == len(inSeqs):
-            break
-        if seq == inSeqs[index]:
-            output.append(x)
-    return output
-
-
 def parseSeqLabels(pathLabels):
-    lines = open(pathLabels, 'r').readlines()
+    with open(pathLabels, 'r') as f:
+        lines = f.readlines()
     output = {"step": 160}  # Step in librispeech dataset is 160bits
     maxPhone = 0
     for line in lines:
@@ -222,7 +171,8 @@ def cpuStats():
     print(psutil.virtual_memory())
 
 
-def adversarialTrainStep(dataLoader, model, cpcCriterion, optimizerCPC,
+def adversarialTrainStep(dataLoader, model,
+                         cpcCriterion, optimizerCPC,
                          speakerCriterion, optimizerPhone):
 
     model.train()
@@ -273,14 +223,13 @@ def adversarialTrainStep(dataLoader, model, cpcCriterion, optimizerCPC,
 
 
 def trainStep(dataLoader,
-              model,
-              cpcCriterion,
+              model_criterion,
               optimizer,
               scheduler):
 
-    if model.optimize:
-        model.train()
-    cpcCriterion.train()
+    if model_criterion.module.model.optimize:
+        model_criterion.module.model.train()
+    model_criterion.module.criterion.train()
 
     logs = {"step": 0}
     for step, fulldata in enumerate(dataLoader):
@@ -288,8 +237,7 @@ def trainStep(dataLoader,
         batchData, label = fulldata
         batchData = batchData.cuda(non_blocking=True)
         label = label.cuda(non_blocking=True)
-        cFeature, encodedData, label = model(batchData, label)
-        allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
+        allLosses, allAcc = model_criterion(batchData, label)
 
         totLoss = allLosses.sum()
         totLoss.backward()
@@ -314,11 +262,9 @@ def trainStep(dataLoader,
 
 
 def valStep(dataLoader,
-            model,
-            cpcCriterion):
-    model.eval()
-    cpcCriterion.eval()
+            model_criterion):
 
+    model_criterion.eval()
     logs = {"step": 0}
     for step, fulldata in enumerate(dataLoader):
 
@@ -328,8 +274,7 @@ def valStep(dataLoader,
         label = label.cuda(non_blocking=True)
 
         with torch.no_grad():
-            cFeature, encodedData, label = model(batchData, label)
-            allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
+            allLosses, allAcc = model_criterion(batchData, label)
 
         if "locLoss_val" not in logs:
             logs["locLoss_val"] = np.zeros(allLosses.size(1))
@@ -346,8 +291,7 @@ def valStep(dataLoader,
 
 def run(trainLoader,
         valLoader,
-        cpcModel,
-        cpcCriterion,
+        model_criterion,
         nEpoch,
         pathCheckpoint,
         optimizer,
@@ -362,6 +306,10 @@ def run(trainLoader,
 
     if adversarial is not None:
         optimAdv = torch.optim.Adam(list(adversarial.parameters()), lr=2e-4)
+        cpcModel = torch.nn.DataParallel(model_criterion.module.model,
+                                         device_ids=model_criterion.device_ids)
+        cpcCriterion = torch.nn.DataParallel(model_criterion.module.criterion,
+                                             device_ids=model_criterion.device_ids)
 
     for epoch in range(startEpoch, nEpoch):
 
@@ -378,15 +326,15 @@ def run(trainLoader,
                                                 optimAdv)
         else:
             locLogsTrain = trainStep(
-                trainLoader, cpcModel, cpcCriterion, optimizer, scheduler)
+                trainLoader, model_criterion, optimizer, scheduler)
 
-        locLogsVal = valStep(valLoader, cpcModel, cpcCriterion)
+        locLogsVal = valStep(valLoader, model_criterion)
 
         torch.cuda.empty_cache()
 
         currentAccuracy = float(locLogsVal["locAcc_val"].mean())
         if currentAccuracy > bestAcc:
-            bestStateDict = cpcModel.module.state_dict()
+            bestStateDict = model_criterion.module.model.state_dict()
 
         for key, value in dict(locLogsTrain, **locLogsVal).items():
             if key not in logs:
@@ -399,8 +347,9 @@ def run(trainLoader,
 
         if pathCheckpoint is not None \
                 and (epoch % logs["saveStep"] == 0 or epoch == nEpoch-1):
-            stateDict = {"gEncoder": cpcModel.module.state_dict(),
-                         "cpcCriterion": cpcCriterion.module.state_dict(),
+            print(pathCheckpoint)
+            stateDict = {"gEncoder": model_criterion.module.model.state_dict(),
+                         "cpcCriterion": model_criterion.module.criterion.state_dict(),
                          "optimizer": optimizer.state_dict(),
                          "best": bestStateDict}
 
@@ -483,14 +432,13 @@ def main(args):
 
     batchSize = args.nGPU * args.batchSizeGPU
     cpcModel.supervised = args.supervised
-    cpcModel = torch.nn.DataParallel(cpcModel, device_ids=range(args.nGPU))
 
     # Training criterion
     if not args.supervised:
         if args.cpc_mode == "bert":
-            cpcCriterion =  CPCBertCriterion(args.hiddenGar,
-                                             args.hiddenEncoder,
-                                             args.negativeSamplingExt)
+            cpcCriterion = CPCBertCriterion(args.hiddenGar,
+                                            args.hiddenEncoder,
+                                            args.negativeSamplingExt)
         else:
             cpcCriterion = CPCUnsupersivedCriterion(args.nPredicts,
                                                     args.hiddenGar,
@@ -507,8 +455,9 @@ def main(args):
         state_dict = torch.load(args.load[0])
         cpcCriterion.load_state_dict(state_dict["cpcCriterion"])
 
-    cpcCriterion = torch.nn.DataParallel(cpcCriterion,
-                                         device_ids=range(args.nGPU))
+    cpcCriterion.cuda()
+    cpcModel.cuda()
+
     cpcModel.optimize = True
     if args.eval:
         print("Evaluation mode")
@@ -516,9 +465,6 @@ def main(args):
         cpcModel.eval()
         for g in cpcModel.parameters():
             g.requires_grad = False
-
-    cpcCriterion.cuda()
-    cpcModel.cuda()
 
     # Optimizer
     g_params = list(cpcCriterion.parameters())
@@ -566,10 +512,13 @@ def main(args):
                                             device_ids=range(args.nGPU))
         adversarial.cuda()
 
+    model_criterion = ModelCriterionCombined(cpcModel, cpcCriterion)
+    model_criterion = torch.nn.DataParallel(
+        model_criterion, device_ids=range(args.nGPU)).cuda()
+
     run(trainLoader,
         valLoader,
-        cpcModel,
-        cpcCriterion,
+        model_criterion,
         args.nEpoch,
         args.pathCheckpoint,
         optimizer,
