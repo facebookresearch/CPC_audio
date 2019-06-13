@@ -3,16 +3,19 @@ import json
 import os
 import random
 import sys
-from termcolor import colored
-
 import numpy as np
 import torch
 
 from dataset import AudioBatchData
-from model import CPCModel, ConcatenatedModel
+from model import CPCModel, ConcatenatedModel, CPCBertModel
 from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, \
-    PhoneCriterion
+    PhoneCriterion, CPCBertCriterion
 import psutil
+
+
+class Struct:
+    def __init__(self, **entries):
+        self.__dict__.update(entries)
 
 
 def set_seed(seed):
@@ -52,6 +55,42 @@ def saveLogs(data, pathLogs):
         json.dump(data, file, indent=2)
 
 
+def loadModel(pathCheckpoints, loadStateDict=True):
+    models = []
+    hiddenGar, hiddenEncoder = 0, 0
+    for path in pathCheckpoints:
+        print(f"Loading checkpoint {path}")
+        _, _, locArgs = getCheckpointData(os.path.dirname(path))
+        locArgs = argparse.Namespace(**locArgs)
+
+        if locArgs.load is not None and len(locArgs.load) > 1:
+            m_, hg, he = loadModel(locArgs.load, loadStateDict=False)
+            hiddenGar += hg
+            hiddenEncoder += he
+        else:
+            encoderNet = getEncoder(locArgs.encoder_type, locArgs.hiddenEncoder)
+            arNet = getAR(locArgs)
+            if locArgs.cpc_mode == "bert":
+                m_ = CPCBertModel(encoderNet, arNet,
+                                        blockSize=locArgs.nPredicts)
+                m_.supervised = locArgs.supervised
+            else:
+                m_ = CPCModel(encoderNet, arNet)
+
+        if loadStateDict:
+            state_dict = torch.load(path)
+            m_.load_state_dict(state_dict["gEncoder"])
+            hiddenGar += locArgs.hiddenGar
+            hiddenEncoder += locArgs.hiddenEncoder
+
+        models.append(m_)
+
+    if len(models) == 1:
+        return models[0], hiddenGar, hiddenEncoder
+
+    return ConcatenatedModel(models), hiddenGar, hiddenEncoder
+
+
 def getEncoder(encoderType, hiddenEncoder):
 
     if encoderType == 'mfcc':
@@ -74,6 +113,13 @@ def getAR(args):
     elif args.cpc_mode == "cloze":
         from model import BiDIRAR
         arNet = BiDIRAR(args.hiddenEncoder, args.hiddenGar, args.nLevelsGRU)
+    elif args.cpc_mode == "bert":
+        from model import BiDIRARTangled
+        arNet = BiDIRARTangled(args.hiddenEncoder, args.hiddenGar,
+                               args.nLevelsGRU)
+    elif args.no_ar:
+        from model import NoAr
+        arNet = NoAr()
     else:
         from model import CPCAR
         arNet = CPCAR(args.hiddenEncoder, args.hiddenGar,
@@ -90,12 +136,6 @@ def loadArgs(args, locArgs, forbiddenAttr=None):
                 setattr(args, k, v)
         else:
             setattr(args, k, v)
-
-
-def transferArgs(args, locArgs, toTransfer):
-    for key in toTransfer:
-        if key in locArgs:
-            setattr(args, key, locArgs[key])
 
 
 def getCheckpointData(pathDir):
@@ -136,7 +176,10 @@ def findAllSeqs(dirName,
     outSequences = []
     for directory in dirList:
         basePath = directory[prefixSize:]
-        speaker = int(os.path.normpath(basePath).split(os.sep)[0])
+        try:
+            speaker = int(os.path.normpath(basePath).split(os.sep)[0])
+        except ValueError:
+            speaker =0
         speakers.add(speaker)
         for item in os.listdir(directory):
             if os.path.splitext(item)[1] != extension:
@@ -195,10 +238,10 @@ def adversarialTrainStep(dataLoader, model, cpcCriterion, optimizerCPC,
         batchData, label = fulldata
         batchData = batchData.cuda(non_blocking=True)
         label = label.cuda(non_blocking=True)
-        cFeature, encodedData = model(batchData)
+        cFeature, encodedData, label = model(batchData, label)
 
         allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
-        lossSpeak, accSpeak = speakerCriterion(cFeature, encodedData, label)
+        lossSpeak, _ = speakerCriterion(cFeature, encodedData, None)
 
         if "locLoss_train_cpc" not in logs:
             logs["locLoss_train_cpc"] = np.zeros(allLosses.size(1))
@@ -209,10 +252,12 @@ def adversarialTrainStep(dataLoader, model, cpcCriterion, optimizerCPC,
                                       ).detach().cpu().numpy()
         logs["locAcc_train_cpc"] += (allAcc.mean(dim=0)).cpu().numpy()
 
-        totLoss = (allLosses - lossSpeak).sum()
+        totLoss = allLosses.sum() + lossSpeak.sum()
         totLoss.backward(retain_graph=True)
         optimizerCPC.step()
         optimizerPhone.zero_grad()
+
+        lossSpeak, accSpeak = speakerCriterion(cFeature, encodedData, label)
 
         totLoss = lossSpeak.sum()
         totLoss.backward()
@@ -243,7 +288,7 @@ def trainStep(dataLoader,
         batchData, label = fulldata
         batchData = batchData.cuda(non_blocking=True)
         label = label.cuda(non_blocking=True)
-        cFeature, encodedData = model(batchData)
+        cFeature, encodedData, label = model(batchData, label)
         allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
 
         totLoss = allLosses.sum()
@@ -283,7 +328,7 @@ def valStep(dataLoader,
         label = label.cuda(non_blocking=True)
 
         with torch.no_grad():
-            cFeature, encodedData = model(batchData)
+            cFeature, encodedData, label = model(batchData, label)
             allLosses, allAcc = cpcCriterion(cFeature, encodedData, label)
 
         if "locLoss_val" not in logs:
@@ -354,7 +399,6 @@ def run(trainLoader,
 
         if pathCheckpoint is not None \
                 and (epoch % logs["saveStep"] == 0 or epoch == nEpoch-1):
-            print(pathCheckpoint)
             stateDict = {"gEncoder": cpcModel.module.state_dict(),
                          "cpcCriterion": cpcCriterion.module.state_dict(),
                          "optimizer": optimizer.state_dict(),
@@ -366,8 +410,6 @@ def run(trainLoader,
 
 def main(args):
     args = parseArgs(args)
-    print(f'CONFIG:\n{json.dumps(vars(args), indent=4, sort_keys=True)}')
-    print('-' * 50)
 
     set_seed(args.random_seed)
     logs, loadOptimizer = {"epoch": [], "saveStep": args.save_step}, False
@@ -380,6 +422,9 @@ def main(args):
                      forbiddenAttr={"nGPU", "pathCheckpoint",
                                     "debug", "restart"})
             args.load, loadOptimizer = [data], True
+
+    print(f'CONFIG:\n{json.dumps(vars(args), indent=4, sort_keys=True)}')
+    print('-' * 50)
 
     seqNames, speakers = findAllSeqs(args.pathDB,
                                      recursionLevel=args.dataset_levels,
@@ -421,49 +466,37 @@ def main(args):
                                 list(speakers))
 
     if args.load is not None:
-        models = []
-        hiddenGar, hiddenEncoder = 0, 0
-        for path in args.load:
-            print(f"Loading checkpoint {path}")
-            _, _, locArgs = getCheckpointData(os.path.dirname(path))
-            transferArgs(args, locArgs,
-                         ["hiddenEncoder", "hiddenGar", "nLevelsGRU",
-                          "transformer", "encoder_type", "cpc_mode"])
-            encoderNet = getEncoder(args.encoder_type, args.hiddenEncoder)
-            arNet = getAR(args)
-            state_dict = torch.load(path)
-            m_ = CPCModel(encoderNet, arNet)
-            m_.load_state_dict(state_dict["gEncoder"])
-            models.append(m_)
-            hiddenGar += locArgs["hiddenGar"]
-            hiddenEncoder += locArgs["hiddenEncoder"]
-        if len(models) == 1:
-            cpcModel = models[0]
-        else:
-            if not args.eval:
-                print(colored(f'WARNING: concatenated models not fit for \
-                              training mode', 'red'))
-            cpcModel = ConcatenatedModel(models)
-        args.hiddenGar = hiddenGar
-        args.hiddenEncoder = hiddenEncoder
+        cpcModel, args.hiddenGar, args.hiddenEncoder = \
+            loadModel(args.load)
     else:
         # Encoder network
         encoderNet = getEncoder(args.encoder_type, args.hiddenEncoder)
-
         # AR Network
         arNet = getAR(args)
-        cpcModel = CPCModel(encoderNet, arNet)
+
+        if args.cpc_mode == "bert":
+            cpcModel = CPCBertModel(encoderNet, arNet,
+                                    blockSize=args.nPredicts)
+            cpcModel.supervised = args.supervised
+        else:
+            cpcModel = CPCModel(encoderNet, arNet)
 
     batchSize = args.nGPU * args.batchSizeGPU
-
+    cpcModel.supervised = args.supervised
     cpcModel = torch.nn.DataParallel(cpcModel, device_ids=range(args.nGPU))
 
     # Training criterion
     if not args.supervised:
-        cpcCriterion = CPCUnsupersivedCriterion(args.nPredicts, args.hiddenGar,
-                                                args.hiddenEncoder,
-                                                args.negativeSamplingExt,
-                                                mode=args.cpc_mode)
+        if args.cpc_mode == "bert":
+            cpcCriterion =  CPCBertCriterion(args.hiddenGar,
+                                             args.hiddenEncoder,
+                                             args.negativeSamplingExt)
+        else:
+            cpcCriterion = CPCUnsupersivedCriterion(args.nPredicts,
+                                                    args.hiddenGar,
+                                                    args.hiddenEncoder,
+                                                    args.negativeSamplingExt,
+                                                    mode=args.cpc_mode)
     elif args.pathPhone is not None:
         cpcCriterion = PhoneCriterion(args.hiddenGar, nPhones)
     else:
@@ -471,7 +504,7 @@ def main(args):
                                         len(speakers))
 
     if loadOptimizer:
-        state_dict = torch.load(args.load)
+        state_dict = torch.load(args.load[0])
         cpcCriterion.load_state_dict(state_dict["cpcCriterion"])
 
     cpcCriterion = torch.nn.DataParallel(cpcCriterion,
@@ -583,13 +616,14 @@ def parseArgs(argv):
     parser.add_argument('--abspos', action='store_true')
     parser.add_argument('--transformer', action='store_true')
     parser.add_argument('--cpc_mode', type=str, default=None,
-                        choices=['reverse', 'cloze'])
+                        choices=['reverse', 'cloze', 'bert'])
     parser.add_argument('--encoder_type', type=str,
                         choices=['cpc', 'mfcc', 'lfb'],
                         default='cpc')
     parser.add_argument('--random_seed', type=int, default=None)
     parser.add_argument('--adversarial', action='store_true')
     parser.add_argument('--save_step', type=int, default=5)
+    parser.add_argument('--no_ar', action='store_true')
     args = parser.parse_args(argv)
 
     # set it up if needed, so that it is dumped along with other args
@@ -598,9 +632,13 @@ def parseArgs(argv):
 
     if args.nGPU < 0:
         args.nGPU = torch.cuda.device_count()
-    assert args.nGPU <= torch.cuda.device_count(), f"number of GPU asked: {args.nGPU}," \
+    assert args.nGPU <= torch.cuda.device_count(),\
+        f"number of GPU asked: {args.nGPU}," \
         f"number GPU detected: {torch.cuda.device_count()}"
     print("Let's use", args.nGPU, "GPUs!")
+
+    if args.no_ar:
+        args.hiddenGar = args.hiddenEncoder
     return args
 
 

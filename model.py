@@ -121,6 +121,38 @@ class CPCAR(nn.Module):
             x = torch.flip(x, [1])
         return x
 
+class NoAr(nn.Module):
+
+     def __init__(self, *args):
+        super(NoAr, self).__init__()
+
+     def forward(self, x):
+        return x
+
+
+class BiDIRARTangled(nn.Module):
+
+    def __init__(self,
+                 dimEncoded,
+                 dimOutput,
+                 nLevelsGRU):
+
+        super(BiDIRARTangled, self).__init__()
+        assert(dimOutput % 2 == 0)
+
+        self.ARNet = nn.GRU(dimEncoded, dimOutput // 2,
+                            num_layers=nLevelsGRU, batch_first=True,
+                            bidirectional=True)
+
+    def getDimOutput(self):
+        return self.ARNet.hidden_size * 2
+
+    def forward(self, x):
+
+        self.ARNet.flatten_parameters()
+        xf, _ = self.ARNet(x)
+        return xf
+
 
 class BiDIRAR(nn.Module):
 
@@ -164,10 +196,69 @@ class CPCModel(nn.Module):
         self.gEncoder = encoder
         self.gAR = AR
 
-    def forward(self, batchData):
+    def forward(self, batchData, label):
         encodedData = self.gEncoder(batchData).permute(0, 2, 1)
         cFeature = self.gAR(encodedData)
-        return cFeature, encodedData
+        return cFeature, encodedData, label
+
+
+class CPCBertModel(nn.Module):
+
+    def __init__(self,
+                 encoder,
+                 AR,
+                 nMaskSentence=2,
+                 blockSize=12):
+
+        super(CPCBertModel, self).__init__()
+        self.gEncoder = encoder
+        self.gAR = AR
+        self.blockSize = blockSize
+        self.nMaskSentence = nMaskSentence
+        self.supervised = False
+
+    def getMask(self, batchData):
+
+        batchSize, seqSize, c = batchData.size()
+        maskLabel = torch.randint(0, seqSize // self.blockSize,
+                                  (self.nMaskSentence * batchSize, 1))
+        maskLabel *= self.blockSize
+
+        baseX = torch.arange(0, self.blockSize, dtype=torch.long)
+        baseX = baseX.expand(self.nMaskSentence * batchSize, self.blockSize)
+        maskLabel = maskLabel + baseX
+        maskLabel = maskLabel.view(-1)
+
+        baseY = torch.arange(0, batchSize,
+                             dtype=torch.long).view(-1, 1) * seqSize
+        baseY = baseY.expand(batchSize,
+                             self.nMaskSentence *
+                             self.blockSize).contiguous().view(-1)
+        maskLabel = maskLabel + baseY
+        outLabels = torch.zeros(batchSize * seqSize,
+                                dtype=torch.uint8)
+        outLabels[maskLabel] = 1
+
+        outLabels = outLabels.view(batchSize, seqSize)
+
+        return outLabels
+
+    def forward(self, batchData, label):
+
+        fullEncoded = self.gEncoder(batchData).permute(0, 2, 1)
+
+        # Sample random blocks of data
+        if not self.supervised:
+            maskLabels = self.getMask(fullEncoded)
+            partialEncoded = fullEncoded.clone()
+            partialEncoded[maskLabels] = 0
+            cFeature = self.gAR(partialEncoded)
+            return cFeature, fullEncoded, maskLabels.cuda()
+
+        else:
+            cFeature = self.gAR(fullEncoded)
+            return cFeature, fullEncoded, label
+
 
 
 class ConcatenatedModel(nn.Module):
@@ -177,12 +268,12 @@ class ConcatenatedModel(nn.Module):
         super(ConcatenatedModel, self).__init__()
         self.models = torch.nn.ModuleList(model_list)
 
-    def forward(self, batchData):
+    def forward(self, batchData, label):
 
         outFeatures = []
         outEncoded = []
         for model in self.models:
-            cFeature, encodedData = model(batchData)
+            cFeature, encodedData, label = model(batchData, label)
             outFeatures.append(cFeature)
             outEncoded.append(encodedData)
-        return torch.cat(outFeatures, dim=2), torch.cat(outEncoded, dim=2)
+        return torch.cat(outFeatures, dim=2), torch.cat(outEncoded, dim=2), label

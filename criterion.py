@@ -125,6 +125,52 @@ class CPCUnsupersivedCriterion(nn.Module):
         return torch.cat(outLosses, dim=1), torch.cat(outAcc, dim=1)
 
 
+class CPCBertCriterion(nn.Module):
+
+    def __init__(self,
+                 dimOutputAR,           # Dimension of G_ar
+                 dimOutputEncoder,      # Dimension of the convolutional net
+                 negativeSamplingExt):  # Number of negative samples to draw
+
+        super(CPCBertCriterion, self).__init__()
+        self.wPrediction = torch.nn.Linear(dimOutputAR,
+                                           dimOutputEncoder,
+                                           bias=False)
+
+        self.negativeSamplingExt = negativeSamplingExt
+        self.lossCriterion = nn.CrossEntropyLoss()
+
+    def sample(self, encodedData, mask):
+
+        batchSize, nNegativeExt, dimEncoded = encodedData.size()
+        negExt = encodedData[1 - mask].view(-1, dimEncoded)
+        nPos = mask.sum()
+        extIdx = np.random.randint(0, negExt.size(0),
+                                   size=(self.negativeSamplingExt * nPos))
+        negExt = negExt[extIdx].view(nPos, self.negativeSamplingExt,
+                                     dimEncoded)
+
+        posData = encodedData[mask].view(nPos, 1, dimEncoded)
+        labelLoss = torch.zeros(nPos, dtype=torch.long,
+                                device=encodedData.device)
+
+        return torch.cat([posData, negExt], dim=1), labelLoss
+
+    def forward(self, cFeature, encodedData, label):
+
+        batchSize, seqSize, dimAR = cFeature.size()
+        samples, labelLoss = self.sample(encodedData, label)
+        nPos = labelLoss.size(0)
+        predictions = self.wPrediction(cFeature[label]).view(nPos, 1, -1)
+        predictions = (samples * predictions).mean(dim=2)
+        loss = self.lossCriterion(predictions, labelLoss)
+        _, predsIndex = predictions.max(1)
+        acc = torch.sum(predsIndex == labelLoss).double(
+        ).view(1, -1) / nPos
+
+        return loss.view(1, 1), acc
+
+
 class SpeakerCriterion(nn.Module):
 
     def __init__(self, dimEncoder, nSpeakers):
@@ -133,6 +179,7 @@ class SpeakerCriterion(nn.Module):
         self.linearSpeakerClassifier = nn.Linear(
             dimEncoder, nSpeakers)
         self.lossCriterion = nn.CrossEntropyLoss()
+        self.entropyCriterion = nn.LogSoftmax(dim=1)
 
     def forward(self, cFeature, otherEncoded, label):
 
@@ -140,10 +187,15 @@ class SpeakerCriterion(nn.Module):
         batchSize = cFeature.size(0)
         cFeature = cFeature[:, -1, :]
         cFeature = cFeature.view(batchSize, -1)
-
         predictions = self.linearSpeakerClassifier(cFeature)
-        loss = self.lossCriterion(predictions, label).view(1, -1)
-        acc = (predictions.max(1)[1] == label).double().mean().view(1, -1)
+
+        if label is None:
+            loss = self.entropyCriterion(predictions).mean(dim=1).view(-1)
+            acc = torch.zeros(1, 1).cuda()
+        else:
+            loss = self.lossCriterion(predictions, label).view(1, -1)
+            acc = (predictions.max(1)[1] == label).double().mean().view(1, -1)
+
         return loss, acc
 
 
@@ -168,4 +220,4 @@ class PhoneCriterion(nn.Module):
             acc = (predictions.max(1)[1] == label).double().mean().view(1, -1)
             return loss, acc
         else:
-            return predictions.max(1)[1]
+            return predictions
