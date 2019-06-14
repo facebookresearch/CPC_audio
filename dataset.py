@@ -222,6 +222,7 @@ class AudioBatchData(Dataset):
             label = torch.tensor(self.getSpeakerLabel(idx), dtype=torch.long)
 
         outData = self.data[idx:(self.sizeWindow + idx)].view(1, -1)
+
         return outData, label
 
     def getNSpeakers(self):
@@ -244,7 +245,8 @@ class AudioBatchData(Dataset):
                                       offset)
         return BatchSampler(sampler, batchSize, True)
 
-    def getDataLoader(self, batchSize, type, randomOffset, numWorkers=0):
+    def getDataLoader(self, batchSize, type, randomOffset, numWorkers=0,
+                      f16=False):
         r"""
         Get a batch sampler for the current dataset.
         Args:
@@ -268,7 +270,7 @@ class AudioBatchData(Dataset):
 
         return AudioLoader(self, samplerCall, len(self.packageIndex),
                            self.loadNextPack, self.__len__() // batchSize,
-                           numWorkers)
+                           numWorkers, f16)
 
 
 class AudioLoader(object):
@@ -279,13 +281,15 @@ class AudioLoader(object):
                  nLoop,
                  updateCall,
                  size,
-                 numWorkers):
+                 numWorkers,
+                 f16):
         self.samplerCall = samplerCall
         self.updateCall = updateCall
         self.nLoop = nLoop
         self.size = size
         self.dataset = dataset
         self.numWorkers = numWorkers
+        self.f16 = f16
 
     def __len__(self):
         return self.size
@@ -298,6 +302,8 @@ class AudioLoader(object):
                                     batch_sampler=sampler,
                                     num_workers=self.numWorkers)
             for x in dataloader:
+                if self.f16:
+                    x[0] = x[0].half()
                 yield x
             if i < self.nLoop - 1:
                 self.updateCall()

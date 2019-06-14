@@ -39,6 +39,13 @@ class CPCEncoder(nn.Module):
 
         return x
 
+    def half(self):
+
+        super(CPCEncoder, self).half()
+        for layer in self.modules():
+            if isinstance(layer, nn.BatchNorm1d):
+                layer.float()
+
 
 class MFCCEncoder(nn.Module):
 
@@ -201,8 +208,13 @@ class CPCModel(nn.Module):
         cFeature = self.gAR(encodedData)
         return cFeature, encodedData, label
 
+    def half(self):
 
-class CPCBertModel(nn.Module):
+        self.gEncoder.half()
+        self.gAR.half()
+
+
+class CPCBertModel(CPCModel):
 
     def __init__(self,
                  encoder,
@@ -210,9 +222,7 @@ class CPCBertModel(nn.Module):
                  nMaskSentence=2,
                  blockSize=12):
 
-        super(CPCBertModel, self).__init__()
-        self.gEncoder = encoder
-        self.gAR = AR
+        super(CPCBertModel, self).__init__(encoder, AR)
         self.blockSize = blockSize
         self.nMaskSentence = nMaskSentence
         self.supervised = False
@@ -258,7 +268,6 @@ class CPCBertModel(nn.Module):
         else:
             cFeature = self.gAR(fullEncoded)
             return cFeature, fullEncoded, label
-
 
 
 class ConcatenatedModel(nn.Module):

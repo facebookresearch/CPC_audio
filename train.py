@@ -4,6 +4,7 @@ import os
 import random
 import numpy as np
 import torch
+import time
 
 from dataset import AudioBatchData, findAllSeqs, filterSeqs
 from model import CPCModel, ConcatenatedModel, CPCBertModel
@@ -240,7 +241,10 @@ def trainStep(dataLoader,
         allLosses, allAcc = model_criterion(batchData, label)
 
         totLoss = allLosses.sum()
+
         totLoss.backward()
+
+        #Show grads ?
         optimizer.step()
         optimizer.zero_grad()
 
@@ -303,6 +307,7 @@ def run(trainLoader,
     startEpoch = len(logs["epoch"])
     bestAcc = 0
     bestStateDict = None
+    start_time = time.time()
 
     if adversarial is not None:
         optimAdv = torch.optim.Adam(list(adversarial.parameters()), lr=2e-4)
@@ -329,6 +334,9 @@ def run(trainLoader,
                 trainLoader, model_criterion, optimizer, scheduler)
 
         locLogsVal = valStep(valLoader, model_criterion)
+
+        print(f'Ran {epoch + 1} epochs '
+              f'in {time.time() - start_time:.2f} seconds')
 
         torch.cuda.empty_cache()
 
@@ -477,6 +485,10 @@ def main(args):
                                  betas=(args.beta1, args.beta2),
                                  eps=args.epsilon)
 
+    if args.f16:
+        cpcModel.half()
+        cpcCriterion.half()
+
     if loadOptimizer:
         print("Loading optimizer " + args.load[0])
         state_dict = torch.load(args.load[0])
@@ -493,9 +505,9 @@ def main(args):
 
     trainLoader = trainDataset.getDataLoader(batchSize, args.samplingType,
                                              not args.disable_offset,
-                                             numWorkers=0)
+                                             numWorkers=0, f16=args.f16)
     valLoader = valDataset.getDataLoader(batchSize, 'sequential', False,
-                                         numWorkers=0)
+                                         numWorkers=0, f16=args.f16)
 
     if args.schedulerStep > 0:
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
@@ -532,7 +544,7 @@ def parseArgs(argv):
     parser = argparse.ArgumentParser(description='Trainer')
     parser.add_argument(
         '--pathDB', type=str,
-        default="/datasets01/LibriSpeech/022219/train-clean-100/")
+        default="/datasets01_101/LibriSpeech/022219/train-clean-100/")
     parser.add_argument('--pathTrain', type=str, default=None)
     parser.add_argument('--pathVal', type=str, default=None)
     parser.add_argument('--pathPhone', type=str, default=None)
@@ -573,6 +585,8 @@ def parseArgs(argv):
     parser.add_argument('--adversarial', action='store_true')
     parser.add_argument('--save_step', type=int, default=5)
     parser.add_argument('--no_ar', action='store_true')
+    parser.add_argument('--f16', action='store_true',
+                        help="Use float16 model")
     args = parser.parse_args(argv)
 
     # set it up if needed, so that it is dumped along with other args
