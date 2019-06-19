@@ -1,0 +1,13 @@
+diff --git a/track1/eval/eval_track1.py b/track1/eval/eval_track1.py
+index fa208de..b4f0ce4 100644
+--- a/track1/eval/eval_track1.py
++++ b/track1/eval/eval_track1.py
+@@ -343,7 +343,7 @@ def fullrun(task, data_folder, feature_folder, h5, file_sizes, corpus,
+             print("Preprocessing... Writing the features in h5 format")
+             tryremove(feature_file)
+             any2h5features.convert(
+-                feature_folder, h5_filename=feature_file, load=loadfeats)
++                feature_folder, h5_filename=feature_file)
+             # featuretime = getmtime(feature_file)
+             with h5py.File(feature_file) as fh:
+                 fh.attrs.create('done', True)

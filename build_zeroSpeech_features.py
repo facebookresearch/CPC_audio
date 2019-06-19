@@ -6,6 +6,7 @@ from dataset import findAllSeqs
 import torch
 import progressbar
 import argparse
+import numpy as np
 
 
 def buildFeature(featureMaker, seqPath, strict=False, maxSizeSeq=64000):
@@ -26,7 +27,8 @@ def buildFeature(featureMaker, seqPath, strict=False, maxSizeSeq=64000):
 
     if strict and start < sizeSeq:
         subseq = (seq[:, -maxSizeSeq:]).view(1, 1, -1).cuda()
-        features, _ = featureMaker(subseq)
+        with torch.no_grad():
+            features, _ = featureMaker(subseq)
         out.append(features[:, start:].detach().cpu())
 
     return torch.cat(out, dim=1)
@@ -41,7 +43,7 @@ def getArgs(pathCheckpoints):
 
 def buildAllFeature(featureMaker, pathDB, pathOut,
                     seqList, stepSize=0.01, strict=False,
-                    maxSizeSeq=64000):
+                    maxSizeSeq=64000, format='txt'):
 
     totSeqs = len(seqList)
     startStep = stepSize / 2
@@ -53,17 +55,25 @@ def buildAllFeature(featureMaker, pathDB, pathOut,
                                os.path.join(pathDB, seqPath),
                                strict=strict,
                                maxSizeSeq=maxSizeSeq)
+
+        _, nSteps, hiddenSize = feature.size()
         outName = os.path.basename(os.path.splitext(seqPath)[0]) + '.fea'
+        fname = os.path.join(pathOut, outName)
 
-        with open(os.path.join(pathOut, outName), 'w') as file:
-
-            _, nSteps, hiddenSize = feature.size()
-            for step in range(nSteps):
-                line = [startStep + step * stepSize] + \
-                    feature[0, step, :].tolist()
-                line = [str(x) for x in line]
-                linestr = ' '.join(line) + '\n'
-                file.write(linestr)
+        if format == 'npz':
+            time = [startStep + step * stepSize for step in range(nSteps)]
+            values = feature.squeeze(0).cpu().numpy()
+            with open(fname, 'wb') as f:
+                np.savez(f, time=time, features=values)
+        else:
+            with open(fname, 'w') as f:
+                _, nSteps, hiddenSize = feature.size()
+                for step in range(nSteps):
+                    line = [startStep + step * stepSize] + \
+                        feature[0, step, :].tolist()
+                    line = [str(x) for x in line]
+                    linestr = ' '.join(line) + '\n'
+                    f.write(linestr)
     bar.finish()
 
 
@@ -121,6 +131,7 @@ if __name__ == "__main__":
     parser.add_argument('--addCriterion', action='store_true')
     parser.add_argument('--oneHot', action='store_true')
     parser.add_argument('--maxSizeSeq', default=64000, type=int)
+    parser.add_argument('--format', default='txt', type=str, choices=['npz', 'txt'])
 
     args = parser.parse_args()
 
@@ -168,4 +179,4 @@ if __name__ == "__main__":
     featureMaker.eval()
 
     buildAllFeature(featureMaker, args.pathDB, args.pathOut,  outData,
-                    stepSize=0.01, strict=False, maxSizeSeq=args.maxSizeSeq)
+                    stepSize=0.01, strict=False, maxSizeSeq=args.maxSizeSeq, format=args.format)

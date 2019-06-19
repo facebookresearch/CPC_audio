@@ -96,3 +96,18 @@ Librispeech500 (noisy):
 --pathTrain /private/home/mriviere/libriSpeech500/LibriSpeech/split_trainSeqs.txt
 
 --pathVal /private/home/mriviere/libriSpeech500/LibriSpeech/split_valSeqs.txt
+
+
+## Faster ABX calculation
+
+To speed up a bit the ABX evaluation loop, two things must be done:
+ * patch the zerospeech script so that it reads npz files (one line has to be changed)
+```
+cd ~/zerospeech/
+patch -p1 < ~/CPC_torch/util/zerospeech.patch
+```
+ * run `build_zeroSpeech_features.py` with the `--format=npz` key, e.g.:
+```
+python  build_zeroSpeech_features.py /private/home/kharitonov/zerospeech2017/data/test/english/10s/ ./features_out/  ./checkpoints/checkpoint_145.pt  --recursionLevel=0 --format=npz
+```
+
