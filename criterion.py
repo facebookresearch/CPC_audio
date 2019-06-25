@@ -55,10 +55,10 @@ class CPCUnsupersivedCriterion(nn.Module):
 
         negExt = encodedData.contiguous().view(-1, dimEncoded)
         # Draw nNegativeExt * batchSize negative samples anywhere in the batch
-        extIdx = np.random.randint(0, nNegativeExt * batchSize,
+        extIdx = torch.randint(low=0, high=nNegativeExt * batchSize,
                                    size=(self.negativeSamplingExt
-                                         * windowSize * batchSize))
-        negExt = negExt[extIdx].view(batchSize, self.negativeSamplingExt,
+                                         * windowSize * batchSize, ), device=encodedData.device)
+        negExt = torch.index_select(negExt, dim=0, index=extIdx).view(batchSize, self.negativeSamplingExt,
                                      windowSize, dimEncoded)
 
         labelLoss = torch.zeros((batchSize * windowSize),

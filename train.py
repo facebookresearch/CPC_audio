@@ -2,6 +2,8 @@ import argparse
 import json
 import os
 import random
+import sys
+import time
 
 import numpy as np
 import torch
@@ -67,16 +69,20 @@ def updateAndShowLogs(text, logs, nPredicts):
         if key == "step":
             continue
 
-        logs[key] /= logStep
-        strLog = [key] + ["{:10.6f}".format(s) for s in logs[key]]
+        row = logs[key].cpu().numpy() / logStep
+        strLog = [key] + ["{:10.6f}".format(s) for s in row]
         print(formatCommand.format(*strLog))
 
     print('-'*50)
 
 
 def saveLogs(data, pathLogs):
+    from utils.misc import untensor
+
+    to_dump = untensor(data)
+
     with open(pathLogs, 'w') as file:
-        json.dump(data, file, indent=2)
+        json.dump(to_dump, file, indent=2)
 
 
 def getEncoder(encoderType, hiddenEncoder):
@@ -167,6 +173,7 @@ def trainStep(model_criterion_combined,
     model_criterion.module.criterion.train()
 
     logs = {"step": 0}
+    start = time.time()
     for step, fulldata in enumerate(model_criterion_combined):
 
         batchData, label = fulldata
@@ -181,13 +188,14 @@ def trainStep(model_criterion_combined,
         optimizer.zero_grad()
 
         if "locLoss_train" not in logs:
-            logs["locLoss_train"] = np.zeros(allLosses.size(1))
-            logs["locAcc_train"] = np.zeros(allLosses.size(1))
+            logs["locLoss_train"] = allLosses.detach().mean(dim=0)
+            logs["locAcc_train"] = allAcc.mean(dim=0)
+        else:
+            logs["locLoss_train"] += allLosses.detach().mean(dim=0)
+            logs["locAcc_train"] += allAcc.mean(dim=0)
 
         logs["step"] += 1
-        logs["locLoss_train"] += (allLosses.mean(dim=0)).detach().cpu().numpy()
-        logs["locAcc_train"] += (allAcc.mean(dim=0)).cpu().numpy()
-
+    print(f'Training epoch took {time.time() - start}')
     updateAndShowLogs("Update %d, training loss:" %
                       (logs["step"] + 1), logs, logs["locLoss_train"].shape[0])
     return logs
@@ -209,12 +217,13 @@ def valStep(dataLoader,
             allLosses, allAcc = model_criterion(batchData, label)
 
         if "locLoss_val" not in logs:
-            logs["locLoss_val"] = np.zeros(allLosses.size(1))
-            logs["locAcc_val"] = np.zeros(allLosses.size(1))
+            logs["locLoss_val"] = allLosses.detach().mean(dim=0)
+            logs["locAcc_val"] = allAcc.mean(dim=0)
+        else:
+            logs["locLoss_val"] += allLosses.detach().mean(dim=0)
+            logs["locAcc_val"] +=  allAcc.mean(dim=0)
 
         logs["step"] += 1
-        logs["locLoss_val"] += allLosses.mean(dim=0).cpu().numpy()
-        logs["locAcc_val"] += allAcc.mean(dim=0).cpu().numpy()
 
     logs["step"] = step
     updateAndShowLogs("Validation loss:", logs, logs["locLoss_val"].shape[0])
@@ -465,6 +474,5 @@ def parseArgs(argv):
 
 
 if __name__ == "__main__":
-    import sys
     args = sys.argv[1:]
     main(args)

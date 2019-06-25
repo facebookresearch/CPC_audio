@@ -18,6 +18,8 @@ if __name__ == '__main__':
                         help="Synonym for preview")
     parser.add_argument("--name", type=str, default=None,
                         help="sbatch name of job. Also used as the output directory")
+    parser.add_argument("--constraint", type=str, default='',
+                        help="slurm constraint on the nodes")
     parser.add_argument("--ncpu", type=int, default=8,
                         help="sbatch number of cpus required per task")
     parser.add_argument("--ngpu", type=int, default=1,
@@ -40,7 +42,7 @@ if __name__ == '__main__':
 
     executor.update_parameters(timeout_min=args.time, partition=args.partition,
                                cpus_per_task=args.ncpu, gpus_per_node=args.ngpu, name=args.name,
-                               comment=args.comment)
+                               comment=args.comment, constraint=args.constraint)
 
     jobs = []
 
