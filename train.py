@@ -164,7 +164,7 @@ def cpuStats():
     print(psutil.virtual_memory())
 
 
-def trainStep(model_criterion_combined,
+def trainStep(dataLoader,
               model_criterion,
               optimizer):
 
@@ -174,7 +174,7 @@ def trainStep(model_criterion_combined,
 
     logs = {"step": 0}
     start = time.time()
-    for step, fulldata in enumerate(model_criterion_combined):
+    for step, fulldata in enumerate(dataLoader):
 
         batchData, label = fulldata
         batchData = batchData.cuda(non_blocking=True)
