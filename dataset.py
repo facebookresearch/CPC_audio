@@ -36,6 +36,8 @@ class AudioBatchData(Dataset):
         self.GROUP_SIZE_LOADED = GROUP_SIZE_LOADED
         self.dbPath = path
         self.sizeWindow = sizeWindow
+        self.dataAugment = None
+        self.probaAugment = 0.5
         self.seqNames = deepcopy(seqNames)
         self.prepare()
         self.speakers = deepcopy(speakerList)
@@ -48,6 +50,23 @@ class AudioBatchData(Dataset):
             self.sizeWindow // self.phoneSize
 
         self.phoneLabelsDict = deepcopy(phoneLabelsDict)
+        self.loadNextPack()
+
+    def getSeqNames(self):
+        return [x[1] for x in self.seqNames]
+
+    def resetPhoneLabels(self, newPhoneLabels, step, dataAugment,
+                         probaAugment=0.5):
+        self.phoneSize = step
+        self.phoneStep = self.sizeWindow // self.phoneSize
+        self.phoneLabelsDict = deepcopy(newPhoneLabels)
+        self.dataAugment = dataAugment
+        self.probaAugment = probaAugment
+        print(dataAugment)
+        self.loadNextPack()
+
+    def disableDataAugmentation(self):
+        self.dataAugment = None
         self.loadNextPack()
 
     def splitSeqTags(seqName):
@@ -77,11 +96,13 @@ class AudioBatchData(Dataset):
 
         # Data
         nprocess = min(50, nSeqs)
-        sliceSize = nSeqs // nprocess
+        sliceSize = nSeqs // nprocess + 1
         mutex = Lock()
 
         def checkLength(rank, pool):
             indexStart = sliceSize * rank
+            if indexStart >= nSeqs:
+                return
             indexEnd = min(nSeqs, indexStart + sliceSize)
             packageSize, start = 0, indexStart
             output = []
@@ -100,7 +121,7 @@ class AudioBatchData(Dataset):
         processes = []
         manager = Manager()
         pool = manager.list()
-        for rank in range(nprocess + 1):
+        for rank in range(nprocess):
             p = torch.multiprocessing.Process(
                 target=checkLength, args=(rank, pool))
             p.start()
@@ -147,6 +168,8 @@ class AudioBatchData(Dataset):
         sliceSize = len(seqNames) // nprocess
         mutex = Lock()
 
+        print(f"Data augmentation set to {self.dataAugment} with probability {self.probaAugment}")
+
         def load(index, pool):
             indexStart = sliceSize * index
             indexEnd = min(len(seqNames), indexStart + sliceSize)
@@ -154,6 +177,9 @@ class AudioBatchData(Dataset):
                 speaker, seq = seqNames[index]
                 seqName = os.path.basename(os.path.splitext(seq)[0])
                 fullPath = os.path.join(self.dbPath, seq)
+                p = random.random()
+                if self.dataAugment is not None and p < self.probaAugment:
+                    fullPath = os.path.join(self.dataAugment, seq)
                 seq = torchaudio.load(fullPath)[0].view(-1)
                 mutex.acquire()
                 pool.append((speaker, seqName, seq))
@@ -182,10 +208,8 @@ class AudioBatchData(Dataset):
                 raise ValueError(f'{speaker} invalid speaker')
 
             if self.phoneLabelsDict is not None:
-                for data in self.phoneLabelsDict[seqName]:
-                    self.phoneLabels.append(data)
+                self.phoneLabels+= self.phoneLabelsDict[seqName]
                 newSize = len(self.phoneLabelsDict[seqName]) * self.phoneSize
-                assert(seq.size(0) >= newSize)
                 seq = seq[:newSize]
 
             sizeSeq = seq.size(0)
