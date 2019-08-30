@@ -1,37 +1,16 @@
-import torchaudio
 import os
 import json
 from train import loadModel
 from dataset import findAllSeqs
+from clustering import kMeanCluster
+from feature_maker import buildFeature, FeatureModule, \
+    ModelPhoneCombined, loadCriterion, \
+    ModelClusterCombined
+from dim_reduction import loadDimReduction
 import torch
 import progressbar
 import argparse
 import numpy as np
-
-
-def buildFeature(featureMaker, seqPath, strict=False, maxSizeSeq=64000):
-
-    seq = torchaudio.load(seqPath)[0]
-    sizeSeq = seq.size(1)
-    start = 0
-    out = []
-    while start < sizeSeq:
-        if strict and start + maxSizeSeq > sizeSeq:
-            break
-        end = min(sizeSeq, start + maxSizeSeq)
-        subseq = (seq[:, start:end]).view(1, 1, -1).cuda()
-        with torch.no_grad():
-            features, _, _ = featureMaker(subseq, None)
-        out.append(features.detach().cpu())
-        start += maxSizeSeq
-
-    if strict and start < sizeSeq:
-        subseq = (seq[:, -maxSizeSeq:]).view(1, 1, -1).cuda()
-        with torch.no_grad():
-            features, _ = featureMaker(subseq)
-        out.append(features[:, start:].detach().cpu())
-
-    return torch.cat(out, dim=1)
 
 
 def getArgs(pathCheckpoints):
@@ -43,7 +22,7 @@ def getArgs(pathCheckpoints):
 
 def buildAllFeature(featureMaker, pathDB, pathOut,
                     seqList, stepSize=0.01, strict=False,
-                    maxSizeSeq=64000, format='txt'):
+                    maxSizeSeq=64000, format='fea'):
 
     totSeqs = len(seqList)
     startStep = stepSize / 2
@@ -57,14 +36,30 @@ def buildAllFeature(featureMaker, pathDB, pathOut,
                                maxSizeSeq=maxSizeSeq)
 
         _, nSteps, hiddenSize = feature.size()
-        outName = os.path.basename(os.path.splitext(seqPath)[0]) + '.fea'
+        outName = os.path.basename(os.path.splitext(seqPath)[0]) + f'.{format}'
         fname = os.path.join(pathOut, outName)
 
         if format == 'npz':
             time = [startStep + step * stepSize for step in range(nSteps)]
-            values = feature.squeeze(0).cpu().numpy()
+            values = feature.squeeze(0).float().cpu().numpy()
+            totTime = np.array([stepSize * nSteps], dtype=np.float32)
             with open(fname, 'wb') as f:
-                np.savez(f, time=time, features=values)
+                np.savez(f, time=time, features=values, totTime=totTime)
+        elif format == 'npy':
+            time = [startStep + step * stepSize for step in range(nSteps)]
+            values = feature.squeeze(0).float().cpu().numpy()
+            with open(fname, 'wb') as f:
+                np.save(f, values)
+        elif format == 'af':
+            import arrayfire as af
+            time = [startStep + step * stepSize for step in range(nSteps)]
+            values = feature.squeeze(0).float().cpu().numpy()
+            totTime = np.array([stepSize * nSteps], dtype=np.float32)
+            af.save_array("time", af.Array(time, dtype=af.Dtype.f32), fname)
+            af.save_array("totTime", af.interop.from_ndarray(totTime),
+                          fname, append=True)
+            af.save_array("features", af.interop.from_ndarray(values),
+                          fname, append=True)
         else:
             with open(fname, 'w') as f:
                 _, nSteps, hiddenSize = feature.size()
@@ -77,47 +72,6 @@ def buildAllFeature(featureMaker, pathDB, pathOut,
     bar.finish()
 
 
-def toOneHot(inputVector, nItems):
-
-    batchSize, = inputVector.size()
-    out = torch.zeros((batchSize, nItems), device=inputVector.device)
-    out.scatter_(1, inputVector.view(-1, 1), 1)
-    return out
-
-
-class ModelPhoneCombined(torch.nn.Module):
-    def __init__(self, model, criterion, nPhones, oneHot):
-        super(ModelPhoneCombined, self).__init__()
-        self.model = model
-        self.criterion = criterion
-        self.nPhones = nPhones
-        self.oneHot = oneHot
-
-    def forward(self, data, label):
-        c_feature, _, _ = self.model(data, label)
-        pred = self.criterion.getPrediction(c_feature)
-
-        if self.oneHot:
-            pred = pred.argmax(dim=1)
-            pred = toOneHot(pred, self.nPhones)
-        else:
-            pred = torch.nn.functional.softmax(pred, dim=1)
-        return pred.view(1, -1, self.nPhones), None, None
-
-
-def loadCriterion(pathCheckpoint):
-    from criterion import PhoneCriterion
-    from train import parseSeqLabels, getCheckpointData
-
-    *_, args = getCheckpointData(os.path.dirname(pathCheckpoint))
-    _, nPhones = parseSeqLabels(args["pathPhone"])
-    criterion = PhoneCriterion(args["hiddenGar"], nPhones)
-
-    state_dict = torch.load(pathCheckpoint)
-    criterion.load_state_dict(state_dict["cpcCriterion"])
-    return criterion, nPhones
-
-
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser('Build features for zerospeech \
@@ -125,13 +79,19 @@ if __name__ == "__main__":
     parser.add_argument('pathDB', help='Path to the reference dataset')
     parser.add_argument('pathOut', help='Path to the output features')
     parser.add_argument('pathCheckpoint', help='Checkpoint to load')
-    parser.add_argument('--seqList', help='Sequences to analyze',
-                        type=str, default=None)
     parser.add_argument('--recursionLevel', type=int, default=1)
+    parser.add_argument('--extension', type=str, default='.wav')
     parser.add_argument('--addCriterion', action='store_true')
     parser.add_argument('--oneHot', action='store_true')
     parser.add_argument('--maxSizeSeq', default=64000, type=int)
-    parser.add_argument('--format', default='txt', type=str, choices=['npz', 'txt'])
+    parser.add_argument('--train_mode', action='store_true')
+    parser.add_argument('--format', default='fea', type=str,
+                        choices=['npz', 'fea', 'npy', 'af'])
+    parser.add_argument('--strict', action='store_true')
+    parser.add_argument('--dimReduction', type=str, default=None)
+    parser.add_argument('--centroidLimits', type=int, nargs=2, default=None)
+    parser.add_argument('--getEncoded', action='store_true')
+    parser.add_argument('--clusters', type=str, default=None)
 
     args = parser.parse_args()
 
@@ -143,40 +103,41 @@ if __name__ == "__main__":
             as file:
         json.dump(vars(args), file, indent=2)
 
-    seqList = [x[1] for x in
-               findAllSeqs(args.pathDB, extension='.wav',
+    outData = [x[1] for x in
+               findAllSeqs(args.pathDB, extension=args.extension,
                            recursionLevel=args.recursionLevel)[0]]
-    itemList = [(os.path.splitext(os.path.basename(x))[0], x) for x in seqList]
-
-    if args.seqList is None:
-        outData = [f[1] for f in itemList]
-    else:
-        outData = []
-        with open(args.seqList, 'r') as file:
-            filterNames = [x.replace('\n', '') for x in file]
-
-        itemList.sort()
-        seqList.sort()
-        indexSeqList = 0
-        for index, data in enumerate(itemList):
-            item, value = data
-            while indexSeqList < len(filterNames) and \
-                    filterNames[indexSeqList] < item:
-                indexSeqList += 1
-
-            if indexSeqList < len(filterNames) and \
-                    filterNames[indexSeqList] == item:
-                outData.append(value)
 
     featureMaker = loadModel([args.pathCheckpoint])[0]
+    featureMaker = FeatureModule(featureMaker, args.getEncoded)
+    featureMaker.collapse = False
+    stepSize = 0.01
 
     if args.addCriterion:
         criterion, nPhones = loadCriterion(args.pathCheckpoint)
         featureMaker = ModelPhoneCombined(featureMaker, criterion,
                                           nPhones, args.oneHot)
+    if args.dimReduction is not None:
+        dimRed = loadDimReduction(args.dimReduction, args.centroidLimits)
+        if dimRed.couple:
+            stepSize *= 2
+        featureMaker = torch.nn.Sequential(featureMaker, dimRed)
+    if args.clusters is not None:
+        cluster_state_dict = torch.load(args.clusters)
+        nClusters = cluster_state_dict['n_clusters']
+        clusterModule = kMeanCluster(torch.zeros(1, nClusters,
+                                                 cluster_state_dict["dim"]))
+        clusterModule.load_state_dict(cluster_state_dict['state_dict'])
+        mode = 'oneHot' if args.oneHot else 'softmax'
+        print(f"{nClusters} clusters found")
+        featureMaker = ModelClusterCombined(featureMaker, clusterModule,
+                                            nClusters,
+                                            mode).cuda()
+    featureMaker = featureMaker.cuda(device=0)
 
-    featureMaker = featureMaker.cuda()
-    featureMaker.eval()
+    if not args.train_mode:
+        featureMaker.eval()
 
     buildAllFeature(featureMaker, args.pathDB, args.pathOut,  outData,
-                    stepSize=0.01, strict=False, maxSizeSeq=args.maxSizeSeq, format=args.format)
+                    stepSize=stepSize, strict=args.strict,
+                    maxSizeSeq=args.maxSizeSeq,
+                    format=args.format)
