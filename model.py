@@ -8,27 +8,94 @@ import torch
 # Networks
 ###########################################
 
+class IDModule(nn.Module):
+
+    def __init__(self, *args, **kwargs):
+        super(IDModule, self).__init__()
+    def forward(self, x):
+        return x
+
+
+class ChannelNorm(nn.Module):
+
+    def __init__(self,
+                 numFeatures,
+                 epsilon=1e-05,
+                 affine =True):
+
+        super(ChannelNorm, self).__init__()
+        if affine:
+            self.weight = nn.parameter.Parameter(torch.Tensor(1,
+                                                              numFeatures, 1))
+            self.bias = nn.parameter.Parameter(torch.Tensor(1, numFeatures, 1))
+        else:
+            self.weight=None
+            self.bias=None
+        self.register_buffer('running_mean', torch.zeros(1, numFeatures, 1))
+        self.register_buffer('running_var', torch.ones(1, numFeatures, 1))
+        self.resetParameters()
+        self.epsilon = epsilon
+        self.p = 0
+
+    def resetParameters(self):
+        if self.weight is not None:
+            nn.init.uniform_(self.weight)
+            nn.init.zeros_(self.bias)
+
+    def forward(self, x):
+
+        cumMean = x.mean(dim=1, keepdim=True)
+        cumVar = x.var(dim=1, keepdim=True)
+        x = (x - cumMean)*torch.rsqrt(cumVar + self.epsilon)
+
+        if self.weight is not None:
+            x = x * self.weight + self.bias
+        return x
+
 
 class CPCEncoder(nn.Module):
 
     def __init__(self,
-                 sizeHidden=512):
+                 sizeHidden=512,
+                 normMode="layerNorm"):
 
         super(CPCEncoder, self).__init__()
+
+        validModes = ["batchNorm", "instanceNorm", "ID", "layerNorm"]
+        if normMode not in validModes:
+            raise ValueError(f"Norm mode must be in {validModes}")
+
+        if normMode == "instanceNorm":
+            normLayer = lambda x : nn.InstanceNorm1d(x, affine=True)
+        elif normMode == "ID":
+            normLayer = IDModule
+        elif normMode == "layerNorm":
+            normLayer = ChannelNorm
+        else:
+            normLayer = nn.BatchNorm1d
+
         self.conv0 = nn.Conv1d(1, sizeHidden, 10, stride=5, padding=3)
-        self.batchNorm0 = nn.BatchNorm1d(sizeHidden)
+        self.batchNorm0 = normLayer(sizeHidden)
         self.conv1 = nn.Conv1d(sizeHidden, sizeHidden, 8, stride=4, padding=2)
-        self.batchNorm1 = nn.BatchNorm1d(sizeHidden)
+        self.batchNorm1 = normLayer(sizeHidden)
         self.conv2 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2, padding=1)
-        self.batchNorm2 = nn.BatchNorm1d(sizeHidden)
+        self.batchNorm2 = normLayer(sizeHidden)
         self.conv3 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2, padding=1)
-        self.batchNorm3 = nn.BatchNorm1d(sizeHidden)
+        self.batchNorm3 = normLayer(sizeHidden)
         self.conv4 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2, padding=1)
-        self.batchNorm4 = nn.BatchNorm1d(sizeHidden)
+        self.batchNorm4 = normLayer(sizeHidden)
+        self.dropout = torch.nn.Dropout2d(p=0.2, inplace=False)
         self.DOWNSAMPLING = 160
 
     def getDimOutput(self):
         return self.conv4.out_channels
+
+    def reset_running_stats(self):
+        self.batchNorm0.reset_running_stats()
+        self.batchNorm1.reset_running_stats()
+        self.batchNorm2.reset_running_stats()
+        self.batchNorm3.reset_running_stats()
+        self.batchNorm4.reset_running_stats()
 
     def forward(self, x):
         x = F.relu(self.batchNorm0(self.conv0(x)))
@@ -36,7 +103,6 @@ class CPCEncoder(nn.Module):
         x = F.relu(self.batchNorm2(self.conv2(x)))
         x = F.relu(self.batchNorm3(self.conv3(x)))
         x = F.relu(self.batchNorm4(self.conv4(x)))
-
         return x
 
     def half(self):
@@ -100,12 +166,22 @@ class CPCAR(nn.Module):
                  dimOutput,
                  keepHidden,
                  nLevelsGRU,
+                 mode="GRU",
                  reverse=False):
 
         super(CPCAR, self).__init__()
+        self.RESIDUAL_STD = 0.1
 
-        self.baseNet = nn.GRU(dimEncoded, dimOutput,
-                              num_layers=nLevelsGRU, batch_first=True)
+        if mode == "LSTM":
+            self.baseNet = nn.LSTM(dimEncoded, dimOutput,
+                                   num_layers=nLevelsGRU, batch_first=True)
+        elif mode == "RNN":
+            self.baseNet = nn.RNN(dimEncoded, dimOutput,
+                                  num_layers=nLevelsGRU, batch_first=True)
+        else:
+            self.baseNet = nn.GRU(dimEncoded, dimOutput,
+                                  num_layers=nLevelsGRU, batch_first=True)
+
         self.hidden = None
         self.keepHidden = keepHidden
         self.reverse = reverse
@@ -117,16 +193,23 @@ class CPCAR(nn.Module):
 
         if self.reverse:
             x = torch.flip(x, [1])
-        self.baseNet.flatten_parameters()
+        try:
+            self.baseNet.flatten_parameters()
+        except RuntimeError:
+            pass
         x, h = self.baseNet(x, self.hidden)
         if self.keepHidden:
-            self.hidden = h.detach()
+            if isinstance(h, tuple):
+                self.hidden = tuple(x.detach() for x in h)
+            else:
+                self.hidden = h.detach()
 
         # For better modularity, a sequence's order should be preserved
         # by each module
         if self.reverse:
             x = torch.flip(x, [1])
         return x
+
 
 class NoAr(nn.Module):
 
@@ -197,11 +280,13 @@ class CPCModel(nn.Module):
 
     def __init__(self,
                  encoder,
-                 AR):
+                 AR,
+                 cumNorm=False):
 
         super(CPCModel, self).__init__()
         self.gEncoder = encoder
         self.gAR = AR
+        self.cumNorm = cumNorm
 
     def forward(self, batchData, label):
         encodedData = self.gEncoder(batchData).permute(0, 2, 1)
@@ -282,7 +367,8 @@ class ConcatenatedModel(nn.Module):
         outFeatures = []
         outEncoded = []
         for model in self.models:
-            cFeature, encodedData = model(batchData)
+            cFeature, encodedData, label = model(batchData, label)
             outFeatures.append(cFeature)
             outEncoded.append(encodedData)
-        return torch.cat(outFeatures, dim=2), torch.cat(outEncoded, dim=2), label
+        return torch.cat(outFeatures, dim=2), \
+            torch.cat(outEncoded, dim=2), label
