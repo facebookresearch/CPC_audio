@@ -204,7 +204,7 @@ if __name__ == "__main__":
     from feature_maker import FeatureModule
 
     parser = argparse.ArgumentParser(description='Dim reduction. Performing \
-                                                  either a PCA or a SFA')
+                                                  geither a PCA or a SFA')
     parser.add_argument('pathCheckpoint', type=str)
     parser.add_argument('pathOut', type=str)
     parser.add_argument(
