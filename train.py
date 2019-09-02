@@ -55,9 +55,7 @@ def loadModel(pathCheckpoints, loadStateDict=True):
             hiddenGar += hg
             hiddenEncoder += he
         else:
-            encoderNet = getEncoder(locArgs.encoder_type,
-                                    locArgs.hiddenEncoder,
-                                    locArgs.normMode)
+            encoderNet = getEncoder(locArgs)
 
             arNet = getAR(locArgs)
             if locArgs.cpc_mode == "bert":
@@ -127,20 +125,20 @@ def saveLogs(data, pathLogs):
         json.dump(data, file, indent=2)
 
 
-def getEncoder(encoderType, hiddenEncoder, normMode):
+def getEncoder(args):
 
-    if encoderType == 'mfcc':
+    if args.encoderType == 'mfcc':
         from model import MFCCEncoder
-        return MFCCEncoder(hiddenEncoder)
-    elif encoderType == 'lfb':
+        return MFCCEncoder(args.hiddenEncoder)
+    elif args.encoderType == 'lfb':
         from model import LFBEnconder
-        return LFBEnconder(hiddenEncoder)
-    elif normMode == 'cumNorm':
+        return LFBEnconder(args.hiddenEncoder)
+    elif args.normMode == 'cumNorm':
         from model import CPCEncoder2Dir
-        return CPCEncoder2Dir(hiddenEncoder)
+        return CPCEncoder2Dir(args.hiddenEncoder)
     else:
         from model import CPCEncoder
-        return CPCEncoder(hiddenEncoder, normMode)
+        return CPCEncoder(args.hiddenEncoder, args.normMode)
 
 
 def getAR(args):
@@ -579,8 +577,7 @@ def main(args):
 
     else:
         # Encoder network
-        encoderNet = getEncoder(args.encoder_type, args.hiddenEncoder,
-                                args.normMode)
+        encoderNet = getEncoder(args)
         # AR Network
         arNet = getAR(args)
 
