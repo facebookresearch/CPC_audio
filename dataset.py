@@ -51,6 +51,7 @@ class AudioBatchData(Dataset):
 
         self.phoneLabelsDict = deepcopy(phoneLabelsDict)
         self.loadNextPack()
+        self.doubleLabels = False
 
     def getSeqNames(self):
         return [x[1] for x in self.seqNames]
@@ -240,12 +241,16 @@ class AudioBatchData(Dataset):
         if idx < 0 or idx >= len(self.data) - self.sizeWindow - 1:
             print(idx)
 
-        if self.phoneSize > 0:
-            label = torch.tensor(self.getPhonem(idx), dtype=torch.long)
-        else:
-            label = torch.tensor(self.getSpeakerLabel(idx), dtype=torch.long)
-
         outData = self.data[idx:(self.sizeWindow + idx)].view(1, -1)
+
+
+        label = torch.tensor(self.getSpeakerLabel(idx), dtype=torch.long)
+        if self.phoneSize > 0:
+            label_phone = torch.tensor(self.getPhonem(idx), dtype=torch.long)
+            if self.doubleLabels:
+                return outData, label, label_phone
+            label = label_phone
+
 
         return outData, label
 

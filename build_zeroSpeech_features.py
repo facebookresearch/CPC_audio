@@ -118,8 +118,6 @@ if __name__ == "__main__":
                                           nPhones, args.oneHot)
     if args.dimReduction is not None:
         dimRed = loadDimReduction(args.dimReduction, args.centroidLimits)
-        if dimRed.couple:
-            stepSize *= 2
         featureMaker = torch.nn.Sequential(featureMaker, dimRed)
     if args.clusters is not None:
         cluster_state_dict = torch.load(args.clusters)
