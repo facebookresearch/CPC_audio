@@ -68,7 +68,7 @@ def loadModel(pathCheckpoints, loadStateDict=True):
 
         if loadStateDict:
             state_dict = torch.load(path)
-            m_.load_state_dict(state_dict["gEncoder"])
+            m_.load_state_dict(state_dict["gEncoder"], strict=False)
             hiddenGar += locArgs.hiddenGar
             hiddenEncoder += locArgs.hiddenEncoder
 
@@ -127,18 +127,15 @@ def saveLogs(data, pathLogs):
 
 def getEncoder(args):
 
-    if args.encoderType == 'mfcc':
+    if args.encoder_type == 'mfcc':
         from model import MFCCEncoder
         return MFCCEncoder(args.hiddenEncoder)
-    elif args.encoderType == 'lfb':
+    elif args.encoder_type == 'lfb':
         from model import LFBEnconder
         return LFBEnconder(args.hiddenEncoder)
-    elif args.normMode == 'cumNorm':
-        from model import CPCEncoder2Dir
-        return CPCEncoder2Dir(args.hiddenEncoder)
     else:
         from model import CPCEncoder
-        return CPCEncoder(args.hiddenEncoder, args.normMode)
+        return CPCEncoder(args.hiddenEncoder, args.normMode, args.double_range)
 
 
 def getAR(args):
@@ -271,8 +268,8 @@ def adversarialTrainStep(dataLoader, model,
         cFeature, encodedData, labelSpeaker = model(batchData, labelSpeaker)
 
         allLosses, allAcc = cpcCriterion(cFeature, encodedData, labelSpeaker)
-        lossSpeak, _ = speakerCriterion(cFeature, encodedData, labelSpeaker)
-        totLoss = allLosses.sum() + 0.001 * lossSpeak.sum()
+        lossSpeak, _ = speakerCriterion(cFeature, encodedData, None)
+        totLoss = allLosses.sum() + lossSpeak.sum()
 
         if clustering is not None:
             lossCluster = clustering(cFeature, labelPhone)
@@ -773,6 +770,7 @@ def parseArgs(argv):
     parser.add_argument('--pathDataAugment', default=None, type=str)
     parser.add_argument('--clustering_update', type=str, default='kmean',
                         choices=['kmean', 'dpmean'])
+    parser.add_argument('--double_range', action='store_true')
     args = parser.parse_args(argv)
 
     # set it up if needed, so that it is dumped along with other args
