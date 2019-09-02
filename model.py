@@ -31,16 +31,15 @@ class ChannelNorm(nn.Module):
         else:
             self.weight=None
             self.bias=None
-        self.register_buffer('running_mean', torch.zeros(1, numFeatures, 1))
-        self.register_buffer('running_var', torch.ones(1, numFeatures, 1))
-        self.resetParameters()
         self.epsilon = epsilon
         self.p = 0
+        self.affine=affine
+        self.reset_parameters()
 
-    def resetParameters(self):
-        if self.weight is not None:
-            nn.init.uniform_(self.weight)
-            nn.init.zeros_(self.bias)
+    def reset_parameters(self):
+        if self.affine:
+            torch.nn.init.ones_(self.weight)
+            torch.nn.init.zeros_(self.bias)
 
     def forward(self, x):
 
@@ -57,7 +56,8 @@ class CPCEncoder(nn.Module):
 
     def __init__(self,
                  sizeHidden=512,
-                 normMode="layerNorm"):
+                 normMode="layerNorm",
+                 double_range=False):
 
         super(CPCEncoder, self).__init__()
 
@@ -74,28 +74,23 @@ class CPCEncoder(nn.Module):
         else:
             normLayer = nn.BatchNorm1d
 
+        doubleRangeMul = 2 if double_range else 1
+
         self.conv0 = nn.Conv1d(1, sizeHidden, 10, stride=5, padding=3)
         self.batchNorm0 = normLayer(sizeHidden)
         self.conv1 = nn.Conv1d(sizeHidden, sizeHidden, 8, stride=4, padding=2)
         self.batchNorm1 = normLayer(sizeHidden)
-        self.conv2 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2, padding=1)
+        self.conv2 = nn.Conv1d(sizeHidden, sizeHidden, 4 * doubleRangeMul,
+                               stride=2*doubleRangeMul, padding=doubleRangeMul)
         self.batchNorm2 = normLayer(sizeHidden)
         self.conv3 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2, padding=1)
         self.batchNorm3 = normLayer(sizeHidden)
         self.conv4 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2, padding=1)
         self.batchNorm4 = normLayer(sizeHidden)
-        self.dropout = torch.nn.Dropout2d(p=0.2, inplace=False)
-        self.DOWNSAMPLING = 160
+        self.DOWNSAMPLING = 160*doubleRangeMul
 
     def getDimOutput(self):
         return self.conv4.out_channels
-
-    def reset_running_stats(self):
-        self.batchNorm0.reset_running_stats()
-        self.batchNorm1.reset_running_stats()
-        self.batchNorm2.reset_running_stats()
-        self.batchNorm3.reset_running_stats()
-        self.batchNorm4.reset_running_stats()
 
     def forward(self, x):
         x = F.relu(self.batchNorm0(self.conv0(x)))
@@ -104,13 +99,6 @@ class CPCEncoder(nn.Module):
         x = F.relu(self.batchNorm3(self.conv3(x)))
         x = F.relu(self.batchNorm4(self.conv4(x)))
         return x
-
-    def half(self):
-
-        super(CPCEncoder, self).half()
-        for layer in self.modules():
-            if isinstance(layer, nn.BatchNorm1d):
-                layer.float()
 
 
 class MFCCEncoder(nn.Module):
@@ -292,11 +280,6 @@ class CPCModel(nn.Module):
         encodedData = self.gEncoder(batchData).permute(0, 2, 1)
         cFeature = self.gAR(encodedData)
         return cFeature, encodedData, label
-
-    def half(self):
-
-        self.gEncoder.half()
-        self.gAR.half()
 
 
 class CPCBertModel(CPCModel):
