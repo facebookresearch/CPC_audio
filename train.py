@@ -653,7 +653,7 @@ def main(args):
         clustering = torch.nn.DataParallel(clustering,
                                            device_ids=range(args.nGPU))
 
-    lr = args.learningRate * 0.1 if args.warm_up else args.learningRate
+    lr = args.learningRate
     optimizer = torch.optim.Adam(g_params, lr=lr,
                                  betas=(args.beta1, args.beta2),
                                  eps=args.epsilon)
@@ -676,12 +676,7 @@ def main(args):
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
                                                     args.schedulerStep,
                                                     gamma=0.5)
-    elif args.warm_up:
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, [1, 2, 3],
-                                                         gamma=3,
-                                                         last_epoch=-1)
-    else:
-        scheduler = None
+    scheduler = None
 
     cpcModel = torch.nn.DataParallel(cpcModel,
                                      device_ids=range(args.nGPU)).cuda()
@@ -777,7 +772,6 @@ def parseArgs(argv):
     parser.add_argument('--n_clusters', type=int, default=200)
     parser.add_argument('--cluster_delay', type=int, default=0)
     parser.add_argument('--cluster_iter', type=int, default=100)
-    parser.add_argument('--warm_up', action='store_true')
     parser.add_argument('--CTC', action='store_true')
     parser.add_argument('--pathDataAugment', default=None, type=str)
     parser.add_argument('--clustering_update', type=str, default='kmean',
