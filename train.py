@@ -121,8 +121,12 @@ def updateAndShowLogs(text, logs):
 
 
 def saveLogs(data, pathLogs):
+    from utils.misc import untensor
+
+    to_dump = untensor(data)
+
     with open(pathLogs, 'w') as file:
-        json.dump(data, file, indent=2)
+        json.dump(to_dump, file, indent=2)
 
 
 def getEncoder(args):
