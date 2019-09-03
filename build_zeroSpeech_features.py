@@ -22,7 +22,8 @@ def getArgs(pathCheckpoints):
 
 def buildAllFeature(featureMaker, pathDB, pathOut,
                     seqList, stepSize=0.01, strict=False,
-                    maxSizeSeq=64000, format='fea'):
+                    maxSizeSeq=64000, format='fea',
+                    seqNorm=False):
 
     totSeqs = len(seqList)
     startStep = stepSize / 2
@@ -32,8 +33,9 @@ def buildAllFeature(featureMaker, pathDB, pathOut,
         bar.update(nseq)
         feature = buildFeature(featureMaker,
                                os.path.join(pathDB, seqPath),
-                               strict=strict,
-                               maxSizeSeq=maxSizeSeq)
+                               strict=strict or seqNorm,
+                               maxSizeSeq=maxSizeSeq,
+                               seqNorm=seqNorm)
 
         _, nSteps, hiddenSize = feature.size()
         outName = os.path.basename(os.path.splitext(seqPath)[0]) + f'.{format}'
@@ -92,6 +94,7 @@ if __name__ == "__main__":
     parser.add_argument('--centroidLimits', type=int, nargs=2, default=None)
     parser.add_argument('--getEncoded', action='store_true')
     parser.add_argument('--clusters', type=str, default=None)
+    parser.add_argument('--seqNorm', action='store_true')
 
     args = parser.parse_args()
 
@@ -108,9 +111,10 @@ if __name__ == "__main__":
                            recursionLevel=args.recursionLevel)[0]]
 
     featureMaker = loadModel([args.pathCheckpoint])[0]
+    stepSize = featureMaker.gEncoder.DOWNSAMPLING / 16000
+    print(f"stepSize : {stepSize}")
     featureMaker = FeatureModule(featureMaker, args.getEncoded)
     featureMaker.collapse = False
-    stepSize = 0.01
 
     if args.addCriterion:
         criterion, nPhones = loadCriterion(args.pathCheckpoint)
@@ -138,4 +142,5 @@ if __name__ == "__main__":
     buildAllFeature(featureMaker, args.pathDB, args.pathOut,  outData,
                     stepSize=stepSize, strict=args.strict,
                     maxSizeSeq=args.maxSizeSeq,
-                    format=args.format)
+                    format=args.format,
+                    seqNorm=args.seqNorm)

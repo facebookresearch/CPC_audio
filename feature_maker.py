@@ -94,8 +94,14 @@ class ModelClusterCombined(torch.nn.Module):
         return pred
 
 
+def seqNormalization(out):
+    mean = out.mean(dim=1)
+    var = out.var(dim=1)
+    return (out - mean) / torch.sqrt(var + 1e-08)
+
+
 def buildFeature(featureMaker, seqPath, strict=False,
-                 maxSizeSeq=64000):
+                 maxSizeSeq=64000, seqNorm=False):
 
     seq = torchaudio.load(seqPath)[0]
     sizeSeq = seq.size(1)
@@ -108,6 +114,8 @@ def buildFeature(featureMaker, seqPath, strict=False,
         subseq = (seq[:, start:end]).view(1, 1, -1).cuda(device=0)
         with torch.no_grad():
             features = featureMaker((subseq, None))
+            if seqNorm:
+                features = seqNormalization(features)
         out.append(features.detach().cpu())
         start += maxSizeSeq
 
@@ -115,6 +123,10 @@ def buildFeature(featureMaker, seqPath, strict=False,
         subseq = (seq[:, -maxSizeSeq:]).view(1, 1, -1).cuda(device=0)
         with torch.no_grad():
             features = featureMaker((subseq, None))
-        out.append(features[:, start:].detach().cpu())
+            if seqNorm:
+                features = seqNormalization(features)
+        delta = (sizeSeq - start) // featureMaker.featureMaker.gEncoder.DOWNSAMPLING
+        out.append(features[:, -delta:].detach().cpu())
 
-    return torch.cat(out, dim=1)
+    out = torch.cat(out, dim=1)
+    return out
