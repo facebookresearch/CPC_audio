@@ -95,8 +95,9 @@ class ModelClusterCombined(torch.nn.Module):
 
 
 def seqNormalization(out):
-    mean = out.mean(dim=1)
-    var = out.var(dim=1)
+    # out.size() = Batch x Seq x Channels
+    mean = out.mean(dim=1, keepdim=True)
+    var = out.var(dim=1, keepdim=True)
     return (out - mean) / torch.sqrt(var + 1e-08)
 
 
