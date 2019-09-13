@@ -6,11 +6,12 @@ import numpy as np
 import torch
 import time
 
-from dataset import AudioBatchData, findAllSeqs, filterSeqs
+from dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels
 from model import CPCModel, ConcatenatedModel, CPCBertModel
 from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, \
     PhoneCriterion, CPCBertCriterion, NoneCriterion, \
-    DeepEmbeddedClustering, DeepClustering, CTCPhoneCriterion, CTCCLustering
+    DeepEmbeddedClustering, DeepClustering, CTCPhoneCriterion, CTCCLustering, \
+    AdvSpeakerCriterion
 from feature_maker import FeatureModule, ModelClusterCombined, buildFeature, \
     toOneHot
 import psutil
@@ -228,18 +229,6 @@ def getCheckpointData(pathDir):
     return data, logs, defaultArgs
 
 
-def parseSeqLabels(pathLabels):
-    with open(pathLabels, 'r') as f:
-        lines = f.readlines()
-    output = {"step": 160}  # Step in librispeech dataset is 160bits
-    maxPhone = 0
-    for line in lines:
-        data = line.split()
-        output[data[0]] = [int(x) for x in data[1:]]
-        maxPhone = max(maxPhone, max(output[data[0]]))
-    return output, maxPhone + 1
-
-
 def cpuStats():
     print(sys.version)
     print(psutil.cpu_percent())
@@ -281,6 +270,9 @@ def adversarialTrainStep(dataLoader, model,
             if clustering is not None:
                 logs["lossCluster_train"] = np.zeros(lossCluster.size(1))
 
+        logs["loss_train_speak"] += (lossSpeak.mean(dim=0).view(1)
+                                     ).detach().cpu().numpy()
+
         logs["step"] += 1
         logs["locLoss_train_cpc"] += (allLosses.mean(dim=0)
                                       ).detach().cpu().numpy()
@@ -291,19 +283,17 @@ def adversarialTrainStep(dataLoader, model,
 
         if clustering is not None:
             totLoss += lossCluster.sum()
-        totLoss.backward(retain_graph=True)
+        totLoss.backward()
         optimizerCPC.step()
         optimizerPhone.zero_grad()
 
         lossSpeak, accSpeak = speakerCriterion(
-            cFeature, encodedData, labelSpeaker)
+            cFeature.detach(), encodedData.detach(), labelSpeaker)
 
         totLoss = lossSpeak.sum()
         totLoss.backward()
         optimizerPhone.step()
 
-        logs["loss_train_speak"] += (lossSpeak.mean(dim=0)
-                                     ).detach().cpu().numpy()
         logs["acc_train_speak"] += (accSpeak.mean(dim=0)).cpu().numpy()
 
     updateAndShowLogs("Update %d, training loss:" %
@@ -560,7 +550,9 @@ def main(args):
                                   args.sizeWindow,
                                   seqTrain,
                                   phoneLabels,
-                                  list(speakers))
+                                  list(speakers),
+                                  dataAugment=args.pathDataAugment,
+                                  probaAugment=args.probaDataAugment)
 
     valDataset = AudioBatchData(args.pathDB,
                                 args.sizeWindow,
@@ -679,8 +671,8 @@ def main(args):
 
     adversarial = None
     if args.adversarial:
-        adversarial = SpeakerCriterion(args.hiddenGar,
-                                       len(speakers))
+        adversarial = AdvSpeakerCriterion(args.hiddenGar,
+                                          len(speakers), args.onEncoder)
         adversarial = torch.nn.DataParallel(adversarial,
                                             device_ids=range(args.nGPU))
         adversarial.cuda()
@@ -768,6 +760,7 @@ def parseArgs(argv):
     parser.add_argument('--cluster_iter', type=int, default=100)
     parser.add_argument('--CTC', action='store_true')
     parser.add_argument('--pathDataAugment', default=None, type=str)
+    parser.add_argument('--probaDataAugment', default=0.5, type=float)
     parser.add_argument('--clustering_update', type=str, default='kmean',
                         choices=['kmean', 'dpmean'])
     parser.add_argument('--double_range', action='store_true')
