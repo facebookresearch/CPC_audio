@@ -19,7 +19,9 @@ class AudioBatchData(Dataset):
                  phoneLabelsDict,
                  speakerList,
                  MAX_SIZE_LOADED=4000000000,
-                 GROUP_SIZE_LOADED=2000):
+                 GROUP_SIZE_LOADED=2000,
+                 dataAugment=None,
+                 probaAugment=0.5):
         """
         Args:
             - path (string): path to the training dataset
@@ -36,8 +38,8 @@ class AudioBatchData(Dataset):
         self.GROUP_SIZE_LOADED = GROUP_SIZE_LOADED
         self.dbPath = path
         self.sizeWindow = sizeWindow
-        self.dataAugment = None
-        self.probaAugment = 0.5
+        self.dataAugment = dataAugment
+        self.probaAugment = probaAugment
         self.seqNames = deepcopy(seqNames)
         self.prepare()
         self.speakers = deepcopy(speakerList)
@@ -53,9 +55,6 @@ class AudioBatchData(Dataset):
         self.loadNextPack()
         self.doubleLabels = False
 
-    def getSeqNames(self):
-        return [x[1] for x in self.seqNames]
-
     def resetPhoneLabels(self, newPhoneLabels, step, dataAugment,
                          probaAugment=0.5):
         self.phoneSize = step
@@ -63,7 +62,6 @@ class AudioBatchData(Dataset):
         self.phoneLabelsDict = deepcopy(newPhoneLabels)
         self.dataAugment = dataAugment
         self.probaAugment = probaAugment
-        print(dataAugment)
         self.loadNextPack()
 
     def disableDataAugmentation(self):
@@ -189,6 +187,7 @@ class AudioBatchData(Dataset):
         processes = []
         manager = Manager()
         pool = manager.list()
+        start_time = time.time()
         for rank in range(nprocess):
             p = torch.multiprocessing.Process(target=load, args=(rank, pool))
             p.start()
@@ -199,7 +198,6 @@ class AudioBatchData(Dataset):
         # To accelerate the process a bit
         pool.sort()
         tmpData = []
-        start_time = time.time()
 
         for speaker, seqName, seq in pool:
             while self.speakers[indexSpeaker] < speaker:
@@ -247,9 +245,13 @@ class AudioBatchData(Dataset):
         label = torch.tensor(self.getSpeakerLabel(idx), dtype=torch.long)
         if self.phoneSize > 0:
             label_phone = torch.tensor(self.getPhonem(idx), dtype=torch.long)
-            if self.doubleLabels:
-                return outData, label, label_phone
-            label = label_phone
+            if not self.doubleLabels:
+                label = label_phone
+        else:
+            label_phone = torch.zeros(1)
+
+        if self.doubleLabels:
+            return outData, label, label_phone
 
 
         return outData, label
@@ -448,10 +450,15 @@ def findAllSeqs(dirName,
         dirList = nextList
 
     outSequences = []
+    speakersTarget = {}
     for directory in dirList:
         basePath = directory[prefixSize:]
         try:
-            speaker = int(os.path.normpath(basePath).split(os.sep)[0])
+            speakerStr = os.path.normpath(basePath).split(os.sep)[0]
+            if speakerStr not in speakersTarget:
+                size = len(speakersTarget)
+                speakersTarget[speakerStr] = size
+            speaker = speakersTarget[speakerStr]
         except ValueError:
             speaker = 0
         speakers.add(speaker)
@@ -463,12 +470,24 @@ def findAllSeqs(dirName,
     return outSequences, speakers
 
 
+def parseSeqLabels(pathLabels):
+    with open(pathLabels, 'r') as f:
+        lines = f.readlines()
+    output = {"step": 160}  # Step in librispeech dataset is 160bits
+    maxPhone = 0
+    for line in lines:
+        data = line.split()
+        output[data[0]] = [int(x) for x in data[1:]]
+        maxPhone = max(maxPhone, max(output[data[0]]))
+    return output, maxPhone + 1
+
+
 def filterSeqs(pathTxt, seqCouples):
     with open(pathTxt, 'r') as f:
         inSeqs = [p.replace('\n', '') for p in f.readlines()]
 
     inSeqs.sort()
-    seqCouples.sort(key=lambda x: x[1])
+    seqCouples.sort(key=lambda x: os.path.basename(os.path.splitext(x[1])[0]))
     output, index = [], 0
     for x in seqCouples:
         seq = os.path.basename(os.path.splitext(x[1])[0])
