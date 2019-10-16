@@ -17,6 +17,8 @@ from feature_maker import FeatureModule, ModelClusterCombined, buildFeature, \
 import psutil
 import sys
 
+from random import shuffle
+
 
 def buildNewPhoneDict(pathDIR, seqNames, model, clusters, nk):
 
@@ -69,7 +71,9 @@ def loadModel(pathCheckpoints, loadStateDict=True):
 
         if loadStateDict:
             state_dict = torch.load(path)
+            print(f"Loading the state dict at {path}")
             m_.load_state_dict(state_dict["gEncoder"], strict=False)
+        if not doLoad:
             hiddenGar += locArgs.hiddenGar
             hiddenEncoder += locArgs.hiddenEncoder
 
@@ -98,14 +102,14 @@ def set_seed(seed):
 
 
 def updateAndShowLogs(text, logs):
-    logStep = logs["step"]
+    logStep = logs["iter"]
     print("")
     print('-'*50)
     print(text)
 
     for key in logs:
 
-        if key == "step":
+        if key == "iter":
             continue
 
         nPredicts = logs[key].shape[0]
@@ -122,12 +126,8 @@ def updateAndShowLogs(text, logs):
 
 
 def saveLogs(data, pathLogs):
-    from utils.misc import untensor
-
-    to_dump = untensor(data)
-
     with open(pathLogs, 'w') as file:
-        json.dump(to_dump, file, indent=2)
+        json.dump(data, file, indent=2)
 
 
 def getEncoder(args):
@@ -248,7 +248,7 @@ def adversarialTrainStep(dataLoader, model,
     speakerCriterion.train()
     cpcCriterion.train()
 
-    logs = {"step": 0, "loss_train_speak": 0, "acc_train_speak": 0}
+    logs = {"iter": 0, "loss_train_speak": 0, "acc_train_speak": 0}
     for step, fulldata in enumerate(dataLoader):
 
         optimizerCPC.zero_grad()
@@ -277,7 +277,7 @@ def adversarialTrainStep(dataLoader, model,
         logs["loss_train_speak"] += (lossSpeak.mean(dim=0).view(1)
                                      ).detach().cpu().numpy()
 
-        logs["step"] += 1
+        logs["iter"] += 1
         logs["locLoss_train_cpc"] += (allLosses.mean(dim=0)
                                       ).detach().cpu().numpy()
         if clustering is not None:
@@ -301,7 +301,7 @@ def adversarialTrainStep(dataLoader, model,
         logs["acc_train_speak"] += (accSpeak.mean(dim=0)).cpu().numpy()
 
     updateAndShowLogs("Update %d, training loss:" %
-                      (logs["step"] + 1), logs)
+                      (logs["iter"] + 1), logs)
     return logs
 
 
@@ -316,7 +316,7 @@ def trainStep(dataLoader,
         cpcModel.train()
     cpcCriterion.train()
 
-    logs = {"step": 0}
+    logs = {"iter": 0}
     for step, fulldata in enumerate(dataLoader):
 
         batchData, label = fulldata
@@ -342,7 +342,7 @@ def trainStep(dataLoader,
             if clustering is not None:
                 logs["lossCluster_train"] = np.zeros(lossCluster.size(1))
 
-        logs["step"] += 1
+        logs["iter"] += 1
         logs["locLoss_train"] += (allLosses.mean(dim=0)).detach().cpu().numpy()
         logs["locAcc_train"] += (allAcc.mean(dim=0)).cpu().numpy()
         if clustering is not None:
@@ -350,7 +350,7 @@ def trainStep(dataLoader,
                                           ).detach().cpu().numpy()
 
     updateAndShowLogs("Update %d, training loss:" %
-                      (logs["step"] + 1), logs)
+                      (logs["iter"] + 1), logs)
 
     if scheduler is not None:
         scheduler.step()
@@ -365,7 +365,7 @@ def valStep(dataLoader,
 
     cpcCriterion.eval()
     cpcModel.eval()
-    logs = {"step": 0}
+    logs = {"iter": 0}
     for step, fulldata in enumerate(dataLoader):
 
         batchData, label = fulldata
@@ -385,14 +385,13 @@ def valStep(dataLoader,
             if clustering is not None:
                 logs["lossCluster_val"] = np.zeros(lossCluster.size(1))
 
-        logs["step"] += 1
+        logs["iter"] += 1
         logs["locLoss_val"] += allLosses.mean(dim=0).cpu().numpy()
         if clustering is not None:
             logs["lossCluster_val"] += (lossCluster.mean(dim=0)
                                         ).detach().cpu().numpy()
         logs["locAcc_val"] += allAcc.mean(dim=0).cpu().numpy()
 
-    logs["step"] = step
     updateAndShowLogs("Validation loss:", logs)
     return logs
 
@@ -409,10 +408,12 @@ def run(trainDataset,
         scheduler,
         logs,
         adversarial,
-        clustering):
+        clustering,
+        perLoop):
 
     print(f"Running {nEpoch} epochs")
     startEpoch = len(logs["epoch"])
+    startStep = len(logs["stepLoad"])
     bestAcc = 0
     bestStateDict = None
     start_time = time.time()
@@ -420,6 +421,7 @@ def run(trainDataset,
     if adversarial is not None:
         optimAdv = torch.optim.Adam(list(adversarial.parameters()), lr=2e-4)
 
+    stepLoad = startStep
     for epoch in range(startEpoch, nEpoch):
 
         print(f"Starting epoch {epoch}")
@@ -453,62 +455,72 @@ def run(trainDataset,
         if adversarial is not None:
             trainDataset.doubleLabels = True
 
-        trainLoader = trainDataset.getDataLoader(batchSize, samplingMode,
-                                                 True, numWorkers=0)
+        nLoopsTrain = trainDataset.getNLoadsPerEpoch() if perLoop else 1
+        print(f"{nLoopsTrain} per epoch")
 
-        valLoader = valDataset.getDataLoader(batchSize, 'sequential', False,
-                                             numWorkers=0)
+        for loop in range(nLoopsTrain):
+            onLoop = loop if not perLoop else -1
 
-        print("Training dataset %d batches, Validation dataset %d batches" %
-              (len(trainLoader), len(valLoader)))
+            trainLoader = trainDataset.getDataLoader(batchSize, samplingMode,
+                                                     True, numWorkers=0,
+                                                     onLoop=onLoop)
 
-        if adversarial is not None:
-            locLogsTrain = adversarialTrainStep(trainLoader, cpcModel,
-                                                cpcCriterion,
-                                                optimizer, adversarial,
-                                                optimAdv, clustering)
-        else:
-            locLogsTrain = trainStep(
-                trainLoader, cpcModel, cpcCriterion, optimizer,
-                scheduler, clustering)
+            valLoader = valDataset.getDataLoader(batchSize, 'sequential', False,
+                                                 numWorkers=0)
 
-        locLogsVal = valStep(valLoader, cpcModel, cpcCriterion, clustering)
+            print("Training dataset %d batches, Validation dataset %d batches" %
+                  (len(trainLoader), len(valLoader)))
 
-        print(f'Ran {epoch + 1} epochs '
-              f'in {time.time() - start_time:.2f} seconds')
+            if adversarial is not None:
+                locLogsTrain = adversarialTrainStep(trainLoader, cpcModel,
+                                                    cpcCriterion,
+                                                    optimizer, adversarial,
+                                                    optimAdv, clustering)
+            else:
+                locLogsTrain = trainStep(
+                    trainLoader, cpcModel, cpcCriterion, optimizer,
+                    scheduler, clustering)
 
-        torch.cuda.empty_cache()
+            locLogsVal = valStep(valLoader, cpcModel, cpcCriterion, clustering)
 
-        currentAccuracy = float(locLogsVal["locAcc_val"].mean())
-        if currentAccuracy > bestAcc:
-            bestStateDict = cpcModel.module.state_dict()
+            print(f'Ran {stepLoad + 1} steps '
+                  f'in {time.time() - start_time:.2f} seconds')
 
-        for key, value in dict(locLogsTrain, **locLogsVal).items():
-            if key not in logs:
-                logs[key] = [None for x in range(epoch)]
-            if isinstance(value, np.ndarray):
-                value = value.tolist()
-            logs[key].append(value)
+            torch.cuda.empty_cache()
 
-        logs["epoch"].append(epoch)
+            currentAccuracy = float(locLogsVal["locAcc_val"].mean())
+            if currentAccuracy > bestAcc:
+                bestStateDict = cpcModel.module.state_dict()
 
-        if pathCheckpoint is not None \
-                and (epoch % logs["saveStep"] == 0 or epoch == nEpoch-1):
-            print(pathCheckpoint)
-            stateDict = {"gEncoder": cpcModel.module.state_dict(),
-                         "cpcCriterion": cpcCriterion.module.state_dict(),
-                         "optimizer": optimizer.state_dict(),
-                         "best": bestStateDict}
+            for key, value in dict(locLogsTrain, **locLogsVal).items():
+                if key not in logs:
+                    logs[key] = [None for x in range(epoch)]
+                if isinstance(value, np.ndarray):
+                    value = value.tolist()
+                logs[key].append(value)
 
-            torch.save(stateDict, f"{pathCheckpoint}_{epoch}.pt")
-            saveLogs(logs, pathCheckpoint + "_logs.json")
+            logs["epoch"].append(epoch)
+            logs["stepLoad"].append(stepLoad)
+
+            if pathCheckpoint is not None \
+                    and (stepLoad % logs["saveStep"] == 0 or epoch == nEpoch-1):
+                stateDict = {"gEncoder": cpcModel.module.state_dict(),
+                             "cpcCriterion": cpcCriterion.module.state_dict(),
+                             "optimizer": optimizer.state_dict(),
+                             "best": bestStateDict}
+
+                torch.save(stateDict, f"{pathCheckpoint}_{stepLoad}.pt")
+                saveLogs(logs, pathCheckpoint + "_logs.json")
+                if perLoop:
+                    trainDataset.saveState(f"{pathCheckpoint}_{stepLoad}_DB_state.pt")
+            stepLoad += 1
 
 
 def main(args):
     args = parseArgs(args)
 
     set_seed(args.random_seed)
-    logs, loadOptimizer = {"epoch": [], "saveStep": args.save_step}, False
+    logs, loadOptimizer = {"epoch": [], "iter":[], "saveStep": args.save_step, "stepLoad":[]}, False
     if args.pathCheckpoint is not None and not args.restart:
         cdata = getCheckpointData(args.pathCheckpoint)
         if cdata is not None:
@@ -527,6 +539,7 @@ def main(args):
                                      recursionLevel=args.dataset_levels,
                                      extension=args.file_extension)
 
+    print(f"{len(speakers)} speakers found")
     # Datasets
     if args.pathTrain is not None:
         seqTrain = filterSeqs(args.pathTrain, seqNames)
@@ -534,20 +547,21 @@ def main(args):
         seqTrain = seqNames
 
     if args.pathVal is None:
-        random.shuffle(seqTrain)
+        shuffle(seqTrain)
         sizeTrain = int(0.8 * len(seqTrain))
         seqTrain, seqVal = seqTrain[:sizeTrain], seqTrain[sizeTrain:]
     else:
         seqVal = filterSeqs(args.pathVal, seqNames)
 
     if args.debug:
-        seqTrain = seqTrain[:1000]
-        seqVal = seqVal[:100]
+        seqTrain = seqTrain[-1000:]
+        seqVal = seqVal[-100:]
 
     phoneLabels, nPhones = None, None
     if args.supervised and args.pathPhone is not None:
         print("Loading the phone labels at " + args.pathPhone)
         phoneLabels, nPhones = parseSeqLabels(args.pathPhone)
+        print(f"{nPhones} phones found")
 
     print(f'Loading audio data at {args.pathDB}')
     trainDataset = AudioBatchData(args.pathDB,
@@ -563,6 +577,7 @@ def main(args):
                                 seqVal,
                                 phoneLabels,
                                 list(speakers))
+
 
     if args.load is not None:
         cpcModel, args.hiddenGar, args.hiddenEncoder = \
@@ -693,7 +708,8 @@ def main(args):
         scheduler,
         logs,
         adversarial,
-        clustering)
+        clustering,
+        args.perLoadSave)
 
 
 def parseArgs(argv):
@@ -702,12 +718,12 @@ def parseArgs(argv):
     parser.add_argument(
         '--pathDB', type=str,
         default="/datasets01_101/LibriSpeech/022219/train-clean-100/")
-    parser.add_argument('--pathTrain', type=str,
-                        default="/datasets01_101/LibriSpeech/022219/LibriSpeech100_labels_split/train_split.txt")
-    parser.add_argument('--pathVal', type=str,
-                        default="/datasets01_101/LibriSpeech/022219/LibriSpeech100_labels_split/test_split.txt")
+    parser.add_argument('--pathTrain', type=str,default=None)#
+                        #default="/datasets01_101/LibriSpeech/022219/LibriSpeech100_labels_split/train_split.txt")
+    parser.add_argument('--pathVal', type=str,default=None)
+                        #default="/datasets01_101/LibriSpeech/022219/LibriSpeech100_labels_split/test_split.txt")
     parser.add_argument('--pathPhone', type=str, default=None)
-    parser.add_argument('--hiddenEncoder', type=int, default=512)
+    parser.add_argument('--hiddenEncoder', type=int, default=256)
     parser.add_argument('--hiddenGar', type=int, default=256)
     parser.add_argument('--nPredicts', type=int, default=12)
     parser.add_argument('--negativeSamplingExt', type=int, default=128)
@@ -723,7 +739,7 @@ def parseArgs(argv):
     parser.add_argument('--pathCheckpoint', type=str, default=None)
     parser.add_argument('--sizeWindow', type=int, default=20480)
     parser.add_argument('--nEpoch', type=int, default=200)
-    parser.add_argument('--samplingType', type=str, default='uniform',
+    parser.add_argument('--samplingType', type=str, default='samespeaker',
                         choices=['samespeaker', 'uniform',
                                  'samesequence', 'sequential'])
     parser.add_argument('--nLevelsGRU', type=int, default=1)
@@ -755,8 +771,8 @@ def parseArgs(argv):
                         choices=['instanceNorm', 'ID', 'layerNorm', 'batchNorm'])
     parser.add_argument('--resetBN', action='store_true')
     parser.add_argument('--dropout', action='store_true')
-    parser.add_argument('--rnnMode', type=str, default=None,
-                        choices=['transformer', 'RNN', 'LSTM'])
+    parser.add_argument('--rnnMode', type=str, default='transformer',
+                        choices=['transformer', 'RNN', 'LSTM', 'linear'])
     parser.add_argument('--clustering', type=str, default=None,
                         choices=['deepEmbedded', 'deepClustering', 'CTCClustering'])
     parser.add_argument('--n_clusters', type=int, default=200)
@@ -768,6 +784,7 @@ def parseArgs(argv):
     parser.add_argument('--clustering_update', type=str, default='kmean',
                         choices=['kmean', 'dpmean'])
     parser.add_argument('--double_range', action='store_true')
+    parser.add_argument('--perLoadSave', action='store_true')
     args = parser.parse_args(argv)
 
     # set it up if needed, so that it is dumped along with other args

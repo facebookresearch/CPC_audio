@@ -262,6 +262,9 @@ class AudioBatchData(Dataset):
     def getNSeqs(self):
         return len(self.seqLabel) - 1
 
+    def getNLoadsPerEpoch(self):
+        return len(self.packageIndex)
+
     def getBaseSampler(self, type, batchSize, offset):
         if type == "samespeaker":
             return SameSpeakerSampler(batchSize, self.speakerLabel,
@@ -277,7 +280,7 @@ class AudioBatchData(Dataset):
         return BatchSampler(sampler, batchSize, True)
 
     def getDataLoader(self, batchSize, type, randomOffset, numWorkers=0,
-                      f16=False):
+                      f16=False, onLoop=-1):
         r"""
         Get a batch sampler for the current dataset.
         Args:
@@ -294,14 +297,20 @@ class AudioBatchData(Dataset):
             - randomOffset (bool): if True add a random offset to the sampler
                                    at the begining of each iteration
         """
+        sizeLoop = self.__len__() // batchSize
+        nLoops=len(self.packageIndex)
+        if onLoop >= 0:
+            self.currentPack = onLoop - 1
+            self.loadNextPack()
+            nLoops=1
+
         def samplerCall():
             offset = random.randint(0, self.sizeWindow // 2) \
                 if randomOffset else 0
             return self.getBaseSampler(type, batchSize, offset)
 
-        return AudioLoader(self, samplerCall, len(self.packageIndex),
-                           self.loadNextPack, self.__len__() // batchSize,
-                           numWorkers, f16)
+        return AudioLoader(self, samplerCall, nLoops, self.loadNextPack,
+                           sizeLoop, numWorkers, f16)
 
 
 class AudioLoader(object):
