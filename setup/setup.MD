@@ -9,9 +9,10 @@ The installation is a tiny bit involved due to the torch-audio dependency.
 
 2/ `conda env create -f setup/environment.yml && conda activate cpc37`
 
-3/ install torch-audio:
-  * Linux: `pip install git+https://github.com/pytorch/audio.git`
-  * MacOS: check the instruction on the site https://github.com/pytorch/audio
+# CUDA driver
+
+This setup is given for CUDA 9.2 if you use a different version of CUDA then please change the version of cudatoolkit in environment.yml.
+For more information on the cudatoolkit version to use, please check https://pytorch.org/
 
 # (FAIR only) Slurm-based grid search
 

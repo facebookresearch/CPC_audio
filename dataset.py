@@ -2,8 +2,9 @@ import os
 import random
 import time
 import torch
+from pathlib import Path
 from copy import deepcopy
-from torch.multiprocessing import Lock, Manager
+from torch.multiprocessing import Lock, Manager, Pool
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import Sampler, BatchSampler
 
@@ -18,24 +19,33 @@ class AudioBatchData(Dataset):
                  seqNames,
                  phoneLabelsDict,
                  speakerList,
-                 MAX_SIZE_LOADED=4000000000,
-                 GROUP_SIZE_LOADED=2000,
+                 nProcessLoader=50,
                  dataAugment=None,
-                 probaAugment=0.5):
+                 probaAugment=0.5,
+                 MAX_SIZE_LOADED=4000000000):
         """
         Args:
             - path (string): path to the training dataset
             - sizeWindow (int): size of the sliding window
             - seqNames (list): sequences to load
-            - phoneLabels (dictionnary): if not None, a dictionnary with the
-                                         following entries
+            - phoneLabelsDict (dictionnary): if not None, a dictionnary with the
+                                             following entries
 
-                                         "step": size of a labelled window
-                                         "$SEQ_NAME": list of phonem labels for
-                                         the sequence $SEQ_NAME
+                                             "step": size of a labelled window
+                                             "$SEQ_NAME": list of phonem labels for
+                                             the sequence $SEQ_NAME
+           - speakerList (list): list of all speakers to expect.
+           - nProcessLoader (int): number of processes to call when loading the
+                                   data from the disk
+           - dataAugment (str): path to a directory containing the augmented
+                                data. Must have the same structure as the
+                                main dataset directory (to be depreciated)
+           - probaAugment (float): probability to pick an augmented data
+           - MAX_SIZE_LOADED (int): target maximal size of the floating array
+                                    containing all loaded data.
         """
         self.MAX_SIZE_LOADED = MAX_SIZE_LOADED
-        self.GROUP_SIZE_LOADED = GROUP_SIZE_LOADED
+        self.nProcessLoader = nProcessLoader
         self.dbPath = path
         self.sizeWindow = sizeWindow
         self.dataAugment = dataAugment
@@ -87,14 +97,14 @@ class AudioBatchData(Dataset):
         info = torchaudio.info(os.path.join(self.dbPath, seq))[0]
         return info.length
 
-    def prepare(self, poolSize=50):
+    def prepare(self):
 
         nSeqs = len(self.seqNames)
         random.shuffle(self.seqNames)
         start_time = time.time()
 
         # Data
-        nprocess = min(50, nSeqs)
+        nprocess = min(self.nProcessLoader, nSeqs)
         sliceSize = nSeqs // nprocess + 1
         mutex = Lock()
 
@@ -153,6 +163,17 @@ class AudioBatchData(Dataset):
         self.clear()
         self.loadAll(self.seqNames[seqStart:seqEnd])
 
+    def loadFile(self, data):
+        speaker, seq = data
+        seq = Path(seq)
+        seqName = seq.stem
+        fullPath = self.dbPath / seq
+        p = random.random()
+        if self.dataAugment is not None and p < self.probaAugment:
+            fullPath = self.dataAugment / seq
+        seq = torchaudio.load(fullPath)[0].view(-1)
+        return speaker, seqName, seq
+
     def loadAll(self, seqNames):
 
         # Labels
@@ -163,37 +184,15 @@ class AudioBatchData(Dataset):
         indexSpeaker = 0
 
         # Data
-        nprocess = min(50, len(seqNames))
-        sliceSize = len(seqNames) // nprocess
-        mutex = Lock()
+        nprocess = min(self.nProcessLoader, len(seqNames))
 
         print(f"Data augmentation set to {self.dataAugment} with probability {self.probaAugment}")
 
-        def load(index, pool):
-            indexStart = sliceSize * index
-            indexEnd = min(len(seqNames), indexStart + sliceSize)
-            for index in range(indexStart, indexEnd):
-                speaker, seq = seqNames[index]
-                seqName = os.path.basename(os.path.splitext(seq)[0])
-                fullPath = os.path.join(self.dbPath, seq)
-                p = random.random()
-                if self.dataAugment is not None and p < self.probaAugment:
-                    fullPath = os.path.join(self.dataAugment, seq)
-                seq = torchaudio.load(fullPath)[0].view(-1)
-                mutex.acquire()
-                pool.append((speaker, seqName, seq))
-                mutex.release()
-
-        processes = []
-        manager = Manager()
-        pool = manager.list()
         start_time = time.time()
-        for rank in range(nprocess):
-            p = torch.multiprocessing.Process(target=load, args=(rank, pool))
-            p.start()
-            processes.append(p)
-        for p in processes:
-            p.join()
+
+        with Pool(nprocess) as p:
+            pool = p.map(self.loadFile, seqNames)
+        print(f'Done with load, elapsed: {time.time() - start_time:.3f} sec')
 
         # To accelerate the process a bit
         pool.sort()

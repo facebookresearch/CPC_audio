@@ -408,12 +408,10 @@ def run(trainDataset,
         scheduler,
         logs,
         adversarial,
-        clustering,
-        perLoop):
+        clustering):
 
     print(f"Running {nEpoch} epochs")
     startEpoch = len(logs["epoch"])
-    startStep = len(logs["stepLoad"])
     bestAcc = 0
     bestStateDict = None
     start_time = time.time()
@@ -421,7 +419,6 @@ def run(trainDataset,
     if adversarial is not None:
         optimAdv = torch.optim.Adam(list(adversarial.parameters()), lr=2e-4)
 
-    stepLoad = startStep
     for epoch in range(startEpoch, nEpoch):
 
         print(f"Starting epoch {epoch}")
@@ -455,72 +452,61 @@ def run(trainDataset,
         if adversarial is not None:
             trainDataset.doubleLabels = True
 
-        nLoopsTrain = trainDataset.getNLoadsPerEpoch() if perLoop else 1
-        print(f"{nLoopsTrain} per epoch")
+        trainLoader = trainDataset.getDataLoader(batchSize, samplingMode,
+                                                 True, numWorkers=0)
 
-        for loop in range(nLoopsTrain):
-            onLoop = loop if not perLoop else -1
+        valLoader = valDataset.getDataLoader(batchSize, 'sequential', False,
+                                             numWorkers=0)
 
-            trainLoader = trainDataset.getDataLoader(batchSize, samplingMode,
-                                                     True, numWorkers=0,
-                                                     onLoop=onLoop)
+        print("Training dataset %d batches, Validation dataset %d batches" %
+              (len(trainLoader), len(valLoader)))
 
-            valLoader = valDataset.getDataLoader(batchSize, 'sequential', False,
-                                                 numWorkers=0)
+        if adversarial is not None:
+            locLogsTrain = adversarialTrainStep(trainLoader, cpcModel,
+                                                cpcCriterion,
+                                                optimizer, adversarial,
+                                                optimAdv, clustering)
+        else:
+            locLogsTrain = trainStep(
+                trainLoader, cpcModel, cpcCriterion, optimizer,
+                scheduler, clustering)
 
-            print("Training dataset %d batches, Validation dataset %d batches" %
-                  (len(trainLoader), len(valLoader)))
+        locLogsVal = valStep(valLoader, cpcModel, cpcCriterion, clustering)
 
-            if adversarial is not None:
-                locLogsTrain = adversarialTrainStep(trainLoader, cpcModel,
-                                                    cpcCriterion,
-                                                    optimizer, adversarial,
-                                                    optimAdv, clustering)
-            else:
-                locLogsTrain = trainStep(
-                    trainLoader, cpcModel, cpcCriterion, optimizer,
-                    scheduler, clustering)
+        print(f'Ran {epoch + 1} epochs '
+              f'in {time.time() - start_time:.2f} seconds')
 
-            locLogsVal = valStep(valLoader, cpcModel, cpcCriterion, clustering)
+        torch.cuda.empty_cache()
 
-            print(f'Ran {stepLoad + 1} steps '
-                  f'in {time.time() - start_time:.2f} seconds')
+        currentAccuracy = float(locLogsVal["locAcc_val"].mean())
+        if currentAccuracy > bestAcc:
+            bestStateDict = cpcModel.module.state_dict()
 
-            torch.cuda.empty_cache()
+        for key, value in dict(locLogsTrain, **locLogsVal).items():
+            if key not in logs:
+                logs[key] = [None for x in range(epoch)]
+            if isinstance(value, np.ndarray):
+                value = value.tolist()
+            logs[key].append(value)
 
-            currentAccuracy = float(locLogsVal["locAcc_val"].mean())
-            if currentAccuracy > bestAcc:
-                bestStateDict = cpcModel.module.state_dict()
+        logs["epoch"].append(epoch)
 
-            for key, value in dict(locLogsTrain, **locLogsVal).items():
-                if key not in logs:
-                    logs[key] = [None for x in range(epoch)]
-                if isinstance(value, np.ndarray):
-                    value = value.tolist()
-                logs[key].append(value)
+        if pathCheckpoint is not None \
+                and (epoch % logs["saveStep"] == 0 or epoch == nEpoch-1):
+            stateDict = {"gEncoder": cpcModel.module.state_dict(),
+                         "cpcCriterion": cpcCriterion.module.state_dict(),
+                         "optimizer": optimizer.state_dict(),
+                         "best": bestStateDict}
 
-            logs["epoch"].append(epoch)
-            logs["stepLoad"].append(stepLoad)
-
-            if pathCheckpoint is not None \
-                    and (stepLoad % logs["saveStep"] == 0 or epoch == nEpoch-1):
-                stateDict = {"gEncoder": cpcModel.module.state_dict(),
-                             "cpcCriterion": cpcCriterion.module.state_dict(),
-                             "optimizer": optimizer.state_dict(),
-                             "best": bestStateDict}
-
-                torch.save(stateDict, f"{pathCheckpoint}_{stepLoad}.pt")
-                saveLogs(logs, pathCheckpoint + "_logs.json")
-                if perLoop:
-                    trainDataset.saveState(f"{pathCheckpoint}_{stepLoad}_DB_state.pt")
-            stepLoad += 1
+            torch.save(stateDict, f"{pathCheckpoint}_{epoch}.pt")
+            saveLogs(logs, pathCheckpoint + "_logs.json")
 
 
 def main(args):
     args = parseArgs(args)
 
     set_seed(args.random_seed)
-    logs, loadOptimizer = {"epoch": [], "iter":[], "saveStep": args.save_step, "stepLoad":[]}, False
+    logs, loadOptimizer = {"epoch": [], "iter":[], "saveStep": args.save_step}, False
     if args.pathCheckpoint is not None and not args.restart:
         cdata = getCheckpointData(args.pathCheckpoint)
         if cdata is not None:
@@ -570,13 +556,15 @@ def main(args):
                                   phoneLabels,
                                   list(speakers),
                                   dataAugment=args.pathDataAugment,
-                                  probaAugment=args.probaDataAugment)
+                                  probaAugment=args.probaDataAugment,
+                                  nProcessLoader=args.n_process_loader)
 
     valDataset = AudioBatchData(args.pathDB,
                                 args.sizeWindow,
                                 seqVal,
                                 phoneLabels,
-                                list(speakers))
+                                list(speakers),
+                                nProcessLoader=args.n_process_loader)
 
 
     if args.load is not None:
@@ -708,8 +696,7 @@ def main(args):
         scheduler,
         logs,
         adversarial,
-        clustering,
-        args.perLoadSave)
+        clustering)
 
 
 def parseArgs(argv):
@@ -783,7 +770,7 @@ def parseArgs(argv):
     parser.add_argument('--probaDataAugment', default=0.5, type=float)
     parser.add_argument('--clustering_update', type=str, default='kmean',
                         choices=['kmean', 'dpmean'])
-    parser.add_argument('--perLoadSave', action='store_true')
+    parser.add_argument('--n_process_loader', type=int, default=50)
     args = parser.parse_args(argv)
 
     # set it up if needed, so that it is dumped along with other args
