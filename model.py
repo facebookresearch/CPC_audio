@@ -56,8 +56,7 @@ class CPCEncoder(nn.Module):
 
     def __init__(self,
                  sizeHidden=512,
-                 normMode="layerNorm",
-                 double_range=False):
+                 normMode="layerNorm"):
 
         super(CPCEncoder, self).__init__()
 
@@ -74,20 +73,18 @@ class CPCEncoder(nn.Module):
         else:
             normLayer = nn.BatchNorm1d
 
-        doubleRangeMul = 2 if double_range else 1
-
         self.conv0 = nn.Conv1d(1, sizeHidden, 10, stride=5, padding=3)
         self.batchNorm0 = normLayer(sizeHidden)
         self.conv1 = nn.Conv1d(sizeHidden, sizeHidden, 8, stride=4, padding=2)
         self.batchNorm1 = normLayer(sizeHidden)
-        self.conv2 = nn.Conv1d(sizeHidden, sizeHidden, 4 * doubleRangeMul,
-                               stride=2*doubleRangeMul, padding=doubleRangeMul)
+        self.conv2 = nn.Conv1d(sizeHidden, sizeHidden, 4,
+                               stride=2, padding=1)
         self.batchNorm2 = normLayer(sizeHidden)
         self.conv3 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2, padding=1)
         self.batchNorm3 = normLayer(sizeHidden)
         self.conv4 = nn.Conv1d(sizeHidden, sizeHidden, 4, stride=2, padding=1)
         self.batchNorm4 = normLayer(sizeHidden)
-        self.DOWNSAMPLING = 160*doubleRangeMul
+        self.DOWNSAMPLING = 160
 
     def getDimOutput(self):
         return self.conv4.out_channels
