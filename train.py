@@ -140,7 +140,7 @@ def getEncoder(args):
         return LFBEnconder(args.hiddenEncoder)
     else:
         from model import CPCEncoder
-        return CPCEncoder(args.hiddenEncoder, args.normMode, args.double_range)
+        return CPCEncoder(args.hiddenEncoder, args.normMode)
 
 
 def getAR(args):
@@ -783,7 +783,6 @@ def parseArgs(argv):
     parser.add_argument('--probaDataAugment', default=0.5, type=float)
     parser.add_argument('--clustering_update', type=str, default='kmean',
                         choices=['kmean', 'dpmean'])
-    parser.add_argument('--double_range', action='store_true')
     parser.add_argument('--perLoadSave', action='store_true')
     args = parser.parse_args(argv)
 
