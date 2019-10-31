@@ -11,6 +11,8 @@ dependencies:
   - psutil
   - pip
   - openblas-devel
+  - tqdm
+  - nose
   - pip:
     - progressbar2
     - matplotlib

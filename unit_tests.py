@@ -1,27 +1,28 @@
 import unittest
 import torch
+import os
 from dataset import AudioBatchData, findAllSeqs, filterSeqs
 from nose.tools import eq_, ok_
 from math import log
 from dim_reduction import PCA
-from phone_cluster_correlation import convertToProbaMatrix, getMutualInfo, \
-                                      getEntropy, featureLabelToRepMat, \
-                                      getSegsStats
+# from phone_cluster_correlation import convertToProbaMatrix, getMutualInfo, \
+#                                       getEntropy, featureLabelToRepMat, \
+#                                       getSegsStats
 
 
 class TestDataLoader(unittest.TestCase):
 
     def setUp(self):
 
-        self.seqNames = [(6476, '6476/57446/6476-57446-0019.flac'),
-                         (5678, '5678/43303/5678-43303-0032.flac'),
-                         (1737, '1737/148989/1737-148989-0038.flac'),
-                         (6081, '6081/42010/6081-42010-0006.flac'),
-                         (1116, '1116/132851/1116-132851-0018.flac'),
-                         (5393, '5393/19218/5393-19218-0024.flac'),
-                         (4397, '4397/15668/4397-15668-0007.flac'),
-                         (696, '696/92939/696-92939-0032.flac'),
-                         (3723, '3723/171115/3723-171115-0003.flac')]
+        self.seqNames = [(0, '6476/57446/6476-57446-0019.flac'),
+                         (1, '5678/43303/5678-43303-0032.flac'),
+                         (2, '1737/148989/1737-148989-0038.flac'),
+                         (3, '6081/42010/6081-42010-0006.flac'),
+                         (4, '1116/132851/1116-132851-0018.flac'),
+                         (5, '5393/19218/5393-19218-0024.flac'),
+                         (6, '4397/15668/4397-15668-0007.flac'),
+                         (7, '696/92939/696-92939-0032.flac'),
+                         (8, '3723/171115/3723-171115-0003.flac')]
 
         self.pathDB = "/datasets01_101/LibriSpeech/022219/train-clean-100/"
         self.sizeWindow = 20480
@@ -30,20 +31,33 @@ class TestDataLoader(unittest.TestCase):
     def testLoadData(self):
 
         testData = AudioBatchData(self.pathDB, self.sizeWindow,
-                                  self.seqNames, None, self.speakerList)
+                                  self.seqNames, None, 9)
         assert(testData.getNSpeakers() == 9)
         assert(testData.getNSeqs() == 9)
+
+    def testFindAllSeqs(self):
+        seqNames, speakers = findAllSeqs(self.pathDB,
+                                         extension=".flac")
+        expectedSpeakers = [f for f in os.listdir(self.pathDB) if
+                            os.path.isdir(os.path.join(self.pathDB, f))]
+        eq_(speakers, expectedSpeakers)
+
+    def testFindAllSeqs0Speakers(self):
+        seqNames, speakers = findAllSeqs("/datasets01_101/LibriSpeech/022219/train-clean-100/103/1240",
+                                         extension=".flac")
+        eq_(speakers, [''])
+
 
     def testDataLoader(self):
 
         batchSize = 16
         pathSeqs = "/datasets01_101/LibriSpeech/022219/LibriSpeech100_labels_split/test_split.txt"
-        seqNames, speakers = findAllSeqs(self.pathDB, recursionLevel=2,
+        seqNames, speakers = findAllSeqs(self.pathDB,
                                          extension=".flac")
         seqNames = filterSeqs(pathSeqs, seqNames)
 
         testData = AudioBatchData(self.pathDB, self.sizeWindow, seqNames,
-                                  None, list(speakers))
+                                  None, len(speakers))
 
         # Check the number of speakers
         nSpeaker = testData.getNSpeakers()
@@ -59,9 +73,8 @@ class TestDataLoader(unittest.TestCase):
 
         batchSize = 16
         testData = AudioBatchData(self.pathDB, self.sizeWindow,
-                                  self.seqNames, None, self.speakerList,
-                                  MAX_SIZE_LOADED=1000000,
-                                  GROUP_SIZE_LOADED=2)
+                                  self.seqNames, None, len(self.speakerList),
+                                  MAX_SIZE_LOADED=1000000)
         eq_(testData.getNPacks(), 2)
         testDataLoader = testData.getDataLoader(batchSize, "samespeaker",
                                                 True, numWorkers=2)
@@ -175,11 +188,6 @@ class TestKMean(unittest.TestCase):
         a = torch.tensor([[0,0,1]]).float()
         loss = test(a.view(1, 1, 3))
         ok_(abs(loss.sum().item() - 0.06717577604314462) < 1e-4)
-
-class TestDeepEmbedded(unittest.TestCase):
-
-    def setUp(self):
-        pass
 
 
 class TestStats(unittest.TestCase):

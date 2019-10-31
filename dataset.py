@@ -1,10 +1,11 @@
 import os
 import random
 import time
+import tqdm
 import torch
 from pathlib import Path
 from copy import deepcopy
-from torch.multiprocessing import Lock, Manager, Pool
+from torch.multiprocessing import Pool
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import Sampler, BatchSampler
 
@@ -18,7 +19,7 @@ class AudioBatchData(Dataset):
                  sizeWindow,
                  seqNames,
                  phoneLabelsDict,
-                 speakerList,
+                 nSpeakers,
                  nProcessLoader=50,
                  dataAugment=None,
                  probaAugment=0.5,
@@ -34,7 +35,7 @@ class AudioBatchData(Dataset):
                                              "step": size of a labelled window
                                              "$SEQ_NAME": list of phonem labels for
                                              the sequence $SEQ_NAME
-           - speakerList (list): list of all speakers to expect.
+           - nSpeakers (int): number of speakers to expect.
            - nProcessLoader (int): number of processes to call when loading the
                                    data from the disk
            - dataAugment (str): path to a directory containing the augmented
@@ -46,14 +47,16 @@ class AudioBatchData(Dataset):
         """
         self.MAX_SIZE_LOADED = MAX_SIZE_LOADED
         self.nProcessLoader = nProcessLoader
-        self.dbPath = path
+        self.dbPath = Path(path)
         self.sizeWindow = sizeWindow
         self.dataAugment = dataAugment
         self.probaAugment = probaAugment
-        self.seqNames = deepcopy(seqNames)
+        self.fileLoader = FileLoader(self.probaAugment, self.dataAugment)
+        self.seqNames = [(s, self.dbPath / x) for s, x in seqNames]
+        self.reload_pool = None
+
         self.prepare()
-        self.speakers = deepcopy(speakerList)
-        self.speakers.sort()
+        self.speakers = list(range(nSpeakers))
         self.data = []
 
         self.phoneSize = 0 if phoneLabelsDict is None else \
@@ -92,89 +95,67 @@ class AudioBatchData(Dataset):
         if 'seqLabel' in self.__dict__:
             del self.seqLabel
 
-    def checkLength(self, item):
-        _, seq = item
-        info = torchaudio.info(os.path.join(self.dbPath, seq))[0]
-        return info.length
-
     def prepare(self):
-
         nSeqs = len(self.seqNames)
         random.shuffle(self.seqNames)
         start_time = time.time()
 
         # Data
         nprocess = min(self.nProcessLoader, nSeqs)
-        sliceSize = nSeqs // nprocess + 1
-        mutex = Lock()
 
-        def checkLength(rank, pool):
-            indexStart = sliceSize * rank
-            if indexStart >= nSeqs:
-                return
-            indexEnd = min(nSeqs, indexStart + sliceSize)
-            packageSize, start = 0, indexStart
-            output = []
-            for index, item in enumerate(self.seqNames[indexStart:indexEnd]):
-                _, seq = item
-                l_ = torchaudio.info(os.path.join(self.dbPath, seq))[0].length
-                packageSize += l_
-                if packageSize > self.MAX_SIZE_LOADED:
-                    output.append([start, index, packageSize])
-                    packageSize, start = 0, index
-            output.append([start, indexEnd, packageSize])
-            mutex.acquire()
-            pool += output
-            mutex.release()
+        print("Checking length...")
+        with Pool(nprocess) as p:
+            allLength = p.map(extractLength, self.seqNames)
 
-        processes = []
-        manager = Manager()
-        pool = manager.list()
-        for rank in range(nprocess):
-            p = torch.multiprocessing.Process(
-                target=checkLength, args=(rank, pool))
-            p.start()
-            processes.append(p)
-        for p in processes:
-            p.join()
-
-        pool.sort()
         self.packageIndex, self.totSize = [], 0
-        currSize, start = 0, 0
-        for item in pool:
-            iStart, iEnd, size = item
-            currSize += size
-            self.totSize += size
-            if currSize > self.MAX_SIZE_LOADED:
-                self.packageIndex.append([start, iEnd])
-                currSize, start = 0, iEnd
-        self.packageIndex.append([start, iStart+currSize])
+        start, packageSize = 0, 0
+        for index, length in tqdm.tqdm(enumerate(allLength)):
+            packageSize += length
+            if packageSize > self.MAX_SIZE_LOADED:
+                self.packageIndex.append([start, index])
+                self.totSize += packageSize
+                start, packageSize = index, 0
+
+        if packageSize > 0:
+            self.packageIndex.append([start, len(self.seqNames)])
+            self.totSize += packageSize
+
+        print(f"Done, elapsed: {time.time() - start_time:.3f} seconds")
         print(f'Scanned {len(self.seqNames)} sequences '
               f'in {time.time() - start_time:.2f} seconds')
         self.currentPack = -1
+        self.nextPack = 0
 
     def getNPacks(self):
         return len(self.packageIndex)
 
     def loadNextPack(self):
-        self.currentPack += 1
-        self.currentPack = self.currentPack % len(self.packageIndex)
-        seqStart, seqEnd = self.packageIndex[self.currentPack]
         self.clear()
-        self.loadAll(self.seqNames[seqStart:seqEnd])
+        self.currentPack = self.nextPack
+        seqStart, seqEnd = self.packageIndex[self.currentPack]
+        nprocess = min(self.nProcessLoader, seqEnd - seqStart)
+        start_time = time.time()
+        if self.reload_pool is not None:
+            print('Joining pool')
+            self.reload_pool.join()
+            print(f'Joined process, elapsed={time.time()-start_time:.3f} secs')
+        else:
+            with Pool(nprocess) as p:
+                self.nextData = p.map(self.fileLoader.loadFile,
+                                      self.seqNames[seqStart:seqEnd])
+            print(
+                f'Loaded {seqEnd - seqStart} sequences in {time.time() - start_time:.3f} sec')
+        self.parseNextDataBlock()
+        del self.nextData
+        self.nextPack = (self.currentPack + 1) % len(self.packageIndex)
+        seqStart, seqEnd = self.packageIndex[self.nextPack]
 
-    def loadFile(self, data):
-        speaker, seq = data
-        seq = Path(seq)
-        seqName = seq.stem
-        fullPath = self.dbPath / seq
-        p = random.random()
-        if self.dataAugment is not None and p < self.probaAugment:
-            fullPath = self.dataAugment / seq
-        seq = torchaudio.load(fullPath)[0].view(-1)
-        return speaker, seqName, seq
+        self.reload_pool = Pool(nprocess)
+        self.nextData = self.reload_pool.map(self.fileLoader.loadFile,
+                                             self.seqNames[seqStart:seqEnd])
+        self.reload_pool.close()
 
-    def loadAll(self, seqNames):
+    def parseNextDataBlock(self):
 
         # Labels
         self.speakerLabel = [0]
@@ -183,22 +164,11 @@ class AudioBatchData(Dataset):
         speakerSize = 0
         indexSpeaker = 0
 
-        # Data
-        nprocess = min(self.nProcessLoader, len(seqNames))
-
-        print(f"Data augmentation set to {self.dataAugment} with probability {self.probaAugment}")
-
-        start_time = time.time()
-
-        with Pool(nprocess) as p:
-            pool = p.map(self.loadFile, seqNames)
-        print(f'Done with load, elapsed: {time.time() - start_time:.3f} sec')
-
         # To accelerate the process a bit
-        pool.sort()
+        self.nextData.sort()
         tmpData = []
 
-        for speaker, seqName, seq in pool:
+        for speaker, seqName, seq in self.nextData:
             while self.speakers[indexSpeaker] < speaker:
                 indexSpeaker += 1
                 self.speakerLabel.append(speakerSize)
@@ -206,7 +176,7 @@ class AudioBatchData(Dataset):
                 raise ValueError(f'{speaker} invalid speaker')
 
             if self.phoneLabelsDict is not None:
-                self.phoneLabels+= self.phoneLabelsDict[seqName]
+                self.phoneLabels += self.phoneLabelsDict[seqName]
                 newSize = len(self.phoneLabelsDict[seqName]) * self.phoneSize
                 seq = seq[:newSize]
 
@@ -218,8 +188,6 @@ class AudioBatchData(Dataset):
 
         self.speakerLabel.append(speakerSize)
         self.data = torch.cat(tmpData, dim=0)
-        print(f'Loaded {len(seqNames)} sequences '
-              f'in {time.time() - start_time:.2f} seconds')
 
     def getPhonem(self, idx):
         idPhone = idx // self.phoneSize
@@ -239,8 +207,6 @@ class AudioBatchData(Dataset):
             print(idx)
 
         outData = self.data[idx:(self.sizeWindow + idx)].view(1, -1)
-
-
         label = torch.tensor(self.getSpeakerLabel(idx), dtype=torch.long)
         if self.phoneSize > 0:
             label_phone = torch.tensor(self.getPhonem(idx), dtype=torch.long)
@@ -251,7 +217,6 @@ class AudioBatchData(Dataset):
 
         if self.doubleLabels:
             return outData, label, label_phone
-
 
         return outData, label
 
@@ -296,12 +261,12 @@ class AudioBatchData(Dataset):
             - randomOffset (bool): if True add a random offset to the sampler
                                    at the begining of each iteration
         """
-        sizeLoop = self.__len__() // batchSize
-        nLoops=len(self.packageIndex)
+        nLoops = len(self.packageIndex)
+        totSize = self.totSize // (self.sizeWindow * batchSize)
         if onLoop >= 0:
             self.currentPack = onLoop - 1
             self.loadNextPack()
-            nLoops=1
+            nLoops = 1
 
         def samplerCall():
             offset = random.randint(0, self.sizeWindow // 2) \
@@ -309,7 +274,22 @@ class AudioBatchData(Dataset):
             return self.getBaseSampler(type, batchSize, offset)
 
         return AudioLoader(self, samplerCall, nLoops, self.loadNextPack,
-                           sizeLoop, numWorkers, f16)
+                           totSize, numWorkers, f16)
+
+
+class FileLoader():
+    def __init__(self, probaAugment, pathDataAugment):
+        self.probaAugment = probaAugment
+        self.pathDataAugment = pathDataAugment
+
+    def loadFile(self, data):
+        speaker, fullPath = data
+        seqName = fullPath.stem
+        p = random.random()
+        if self.pathDataAugment is not None and p < self.probaAugment:
+            fullPath = self.pathDataAugment / fullPath.name
+        seq = torchaudio.load(fullPath)[0].view(-1)
+        return speaker, seqName, seq
 
 
 class AudioLoader(object):
@@ -441,41 +421,69 @@ class SameSpeakerSampler(Sampler):
         return iter(self.batches)
 
 
+def extractLength(couple):
+    speaker, locPath = couple
+    info = torchaudio.info(str(locPath))[0]
+    return info.length
+
+
 def findAllSeqs(dirName,
-                recursionLevel=2,
-                extension='.flac'):
+                extension='.flac',
+                loadCache=False):
+    r"""
+    Lists all the sequences with the given extension in the dirName directory.
+    Output:
+        outSequences, speakers
 
-    dirName = os.path.join(dirName, '')
-    dirList = [dirName]
-    prefixSize = len(dirName)
-    speakers = set([])
+        outSequence
+        A list of tuples seq_path, speaker where:
+            - seq_path is the relative path of each sequence relative to the
+            parent directory
+            - speaker is the corresponding speaker index
 
-    for recursion in range(recursionLevel):
-        nextList = []
-        for item in dirList:
-            nextList += [os.path.join(item, f) for f in os.listdir(item)
-                         if os.path.isdir(os.path.join(item, f))]
-        dirList = nextList
+        outSpeakers
+        The speaker labels (in order)
 
-    outSequences = []
-    speakersTarget = {}
-    for directory in dirList:
-        basePath = directory[prefixSize:]
+    The speaker labels are organized the following way
+    \dirName
+        \speaker_label
+            \..
+                ...
+                seqName.extension
+    """
+    cache_path = os.path.join(dirName, '_seqs_cache.txt')
+    if loadCache:
         try:
-            speakerStr = os.path.normpath(basePath).split(os.sep)[0]
-            if speakerStr not in speakersTarget:
-                size = len(speakersTarget)
-                speakersTarget[speakerStr] = size
-            speaker = speakersTarget[speakerStr]
-        except ValueError:
-            speaker = 0
-        speakers.add(speaker)
-        for item in os.listdir(directory):
-            if os.path.splitext(item)[1] != extension:
-                continue
-            outSequences.append((speaker, os.path.join(basePath, item)))
+            outSequences, speakers = torch.load(cache_path)
+            print(f'Loaded from cache {cache_path} successfully')
+            return outSequences, speakers
+        except OSError as err:
+            print(f'Ran in an error while loading {cache_path}: {err}')
+        print('Could not load cache, rebuilding')
 
-    return outSequences, speakers
+    prefixSize = len(dirName)
+    speakersTarget = {}
+    outSequences = []
+    for root, dirs, filenames in tqdm.tqdm(os.walk(dirName)):
+        filtered_files = [f for f in filenames if f.endswith(extension)]
+
+        if len(filtered_files) > 0:
+            speakerStr = root[prefixSize:].split(os.sep)[0]
+            if speakerStr not in speakersTarget:
+                speakersTarget[speakerStr] = len(speakersTarget)
+            speaker = speakersTarget[speakerStr]
+            for filename in filtered_files:
+                full_path = os.path.join(root[prefixSize:], filename)
+                outSequences.append((speaker, full_path))
+    outSpeakers = [None for x in speakersTarget]
+    for key, index in speakersTarget.items():
+        outSpeakers[index] = key
+    try:
+        torch.save((outSequences, outSpeakers), cache_path)
+        print(f'Saved cache file at {cache_path}')
+    except OSError as err:
+        print(f'Ran in an error while saving {cache_path}: {err}')
+    return outSequences, outSpeakers
 
 
 def parseSeqLabels(pathLabels):

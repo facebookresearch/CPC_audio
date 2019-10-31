@@ -81,7 +81,6 @@ if __name__ == "__main__":
     parser.add_argument('pathDB', help='Path to the reference dataset')
     parser.add_argument('pathOut', help='Path to the output features')
     parser.add_argument('pathCheckpoint', help='Checkpoint to load')
-    parser.add_argument('--recursionLevel', type=int, default=1)
     parser.add_argument('--extension', type=str, default='.wav')
     parser.add_argument('--addCriterion', action='store_true')
     parser.add_argument('--oneHot', action='store_true')
@@ -107,8 +106,7 @@ if __name__ == "__main__":
         json.dump(vars(args), file, indent=2)
 
     outData = [x[1] for x in
-               findAllSeqs(args.pathDB, extension=args.extension,
-                           recursionLevel=args.recursionLevel)[0]]
+               findAllSeqs(args.pathDB, extension=args.extension)[0]]
 
     featureMaker = loadModel([args.pathCheckpoint])[0]
     stepSize = featureMaker.gEncoder.DOWNSAMPLING / 16000

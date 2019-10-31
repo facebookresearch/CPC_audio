@@ -1,10 +1,10 @@
 import argparse
 import json
 import os
-import random
 import numpy as np
 import torch
 import time
+import random
 
 from dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels
 from model import CPCModel, ConcatenatedModel, CPCBertModel
@@ -17,7 +17,6 @@ from feature_maker import FeatureModule, ModelClusterCombined, buildFeature, \
 import psutil
 import sys
 
-from random import shuffle
 
 
 def buildNewPhoneDict(pathDIR, seqNames, model, clusters, nk):
@@ -70,8 +69,8 @@ def loadModel(pathCheckpoints, loadStateDict=True):
                               cumNorm=locArgs.normMode == "cumNorm")
 
         if loadStateDict:
-            state_dict = torch.load(path)
             print(f"Loading the state dict at {path}")
+            state_dict = torch.load(path, 'cpu')
             m_.load_state_dict(state_dict["gEncoder"], strict=False)
         if not doLoad:
             hiddenGar += locArgs.hiddenGar
@@ -88,7 +87,9 @@ def loadModel(pathCheckpoints, loadStateDict=True):
 def loadCriterion(pathCheckpoint, downsampling, nSpeakers, nPhones):
     _, _, locArgs = getCheckpointData(os.path.dirname(pathCheckpoint))
     criterion = getCriterion(locArgs, downsampling, nSpeakers, nPhones)
-    state_dict = torch.load(pathCheckpoint)
+
+    state_dict = torch.load(pathCheckpoint, 'cpu')
+
     criterion.load_state_dict(state_dict["cpcCriterion"])
     return criterion
 
@@ -214,7 +215,8 @@ def getCheckpointData(pathDir):
     if not os.path.isdir(pathDir):
         return None
     checkpoints = [x for x in os.listdir(pathDir)
-                   if os.path.splitext(x)[1] == '.pt' and os.path.splitext(x[11:])[0].isdigit()]
+                   if os.path.splitext(x)[1] == '.pt'
+                   and os.path.splitext(x[11:])[0].isdigit()]
     if len(checkpoints) == 0:
         print("No checkpoints found at " + pathDir)
         return None
@@ -514,7 +516,9 @@ def main(args):
             print(f"Checkpoint detected at {data}")
             loadArgs(args, locArgs,
                      forbiddenAttr={"nGPU", "pathCheckpoint",
-                                    "debug", "restart"})
+                                    "debug", "restart", "local_rank",
+                                    "global_rank", "world_size",
+                                    "n_nodes", "node_id", "n_gpu_per_node"})
             args.load, loadOptimizer = [data], True
             args.loadCriterion = True
 
@@ -522,10 +526,10 @@ def main(args):
     print('-' * 50)
 
     seqNames, speakers = findAllSeqs(args.pathDB,
-                                     recursionLevel=args.dataset_levels,
-                                     extension=args.file_extension)
+                                     extension=args.file_extension,
+                                     loadCache=not args.ignore_cache)
 
-    print(f"{len(speakers)} speakers found")
+    print(f'Found files: {len(seqNames)} seqs, {len(speakers)} speakers')
     # Datasets
     if args.pathTrain is not None:
         seqTrain = filterSeqs(args.pathTrain, seqNames)
@@ -533,7 +537,7 @@ def main(args):
         seqTrain = seqNames
 
     if args.pathVal is None:
-        shuffle(seqTrain)
+        random.shuffle(seqTrain)
         sizeTrain = int(0.8 * len(seqTrain))
         seqTrain, seqVal = seqTrain[:sizeTrain], seqTrain[sizeTrain:]
     else:
@@ -549,23 +553,29 @@ def main(args):
         phoneLabels, nPhones = parseSeqLabels(args.pathPhone)
         print(f"{nPhones} phones found")
 
+    print("")
     print(f'Loading audio data at {args.pathDB}')
+    print("Loading the training dataset")
     trainDataset = AudioBatchData(args.pathDB,
                                   args.sizeWindow,
                                   seqTrain,
                                   phoneLabels,
-                                  list(speakers),
+                                  len(speakers),
                                   dataAugment=args.pathDataAugment,
                                   probaAugment=args.probaDataAugment,
                                   nProcessLoader=args.n_process_loader)
+    print("Training dataset loaded")
+    print("")
 
+    print("Loading the validation dataset")
     valDataset = AudioBatchData(args.pathDB,
                                 args.sizeWindow,
                                 seqVal,
                                 phoneLabels,
-                                list(speakers),
+                                len(speakers),
                                 nProcessLoader=args.n_process_loader)
-
+    print("Validation dataset loaded")
+    print("")
 
     if args.load is not None:
         cpcModel, args.hiddenGar, args.hiddenEncoder = \
@@ -601,7 +611,7 @@ def main(args):
                                     len(speakers), nPhones)
 
     if loadOptimizer:
-        state_dict = torch.load(args.load[0])
+        state_dict = torch.load(args.load[0], 'cpu')
         cpcCriterion.load_state_dict(state_dict["cpcCriterion"])
 
     cpcCriterion.cuda()
@@ -653,7 +663,7 @@ def main(args):
 
     if loadOptimizer:
         print("Loading optimizer " + args.load[0])
-        state_dict = torch.load(args.load[0])
+        state_dict = torch.load(args.load[0], 'cpu')
         if "optimizer" in state_dict:
             optimizer.load_state_dict(state_dict["optimizer"])
 
@@ -662,8 +672,9 @@ def main(args):
         if not os.path.isdir(args.pathCheckpoint):
             os.mkdir(args.pathCheckpoint)
         args.pathCheckpoint = os.path.join(args.pathCheckpoint, "checkpoint")
-        with open(args.pathCheckpoint + "_args.json", 'w') as file:
-            json.dump(vars(args), file, indent=2)
+        if args.is_local_master:
+            with open(args.pathCheckpoint + "_args.json", 'w') as file:
+                json.dump(vars(args), file, indent=2)
 
     if args.schedulerStep > 0:
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
@@ -755,13 +766,15 @@ def parseArgs(argv):
                         choices=['GRU', 'LSTM', 'RNN'])
     parser.add_argument('--nBN', type=int, default=3)
     parser.add_argument('--normMode', type=str, default='layerNorm',
-                        choices=['instanceNorm', 'ID', 'layerNorm', 'batchNorm'])
+                        choices=['instanceNorm', 'ID', 'layerNorm',
+                                 'batchNorm'])
     parser.add_argument('--resetBN', action='store_true')
     parser.add_argument('--dropout', action='store_true')
     parser.add_argument('--rnnMode', type=str, default='transformer',
                         choices=['transformer', 'RNN', 'LSTM', 'linear'])
     parser.add_argument('--clustering', type=str, default=None,
-                        choices=['deepEmbedded', 'deepClustering', 'CTCClustering'])
+                        choices=['deepEmbedded', 'deepClustering',
+                                 'CTCClustering'])
     parser.add_argument('--n_clusters', type=int, default=200)
     parser.add_argument('--cluster_delay', type=int, default=0)
     parser.add_argument('--cluster_iter', type=int, default=100)
@@ -771,6 +784,7 @@ def parseArgs(argv):
     parser.add_argument('--clustering_update', type=str, default='kmean',
                         choices=['kmean', 'dpmean'])
     parser.add_argument('--n_process_loader', type=int, default=50)
+    parser.add_argument('--ignore_cache', action='store_true')
     args = parser.parse_args(argv)
 
     # set it up if needed, so that it is dumped along with other args
