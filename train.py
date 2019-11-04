@@ -4,6 +4,7 @@ import os
 import numpy as np
 import torch
 import time
+from copy import deepcopy
 import random
 
 from dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels
@@ -14,9 +15,9 @@ from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, \
     AdvSpeakerCriterion
 from feature_maker import FeatureModule, ModelClusterCombined, buildFeature, \
     toOneHot
+from distribued_training.distribued_mode import init_distributed_mode
 import psutil
 import sys
-
 
 
 def buildNewPhoneDict(pathDIR, seqNames, model, clusters, nk):
@@ -102,8 +103,18 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 
-def updateAndShowLogs(text, logs):
-    logStep = logs["iter"]
+def updateLogs(logs, logStep, prevlogs=None):
+    out = {}
+    for key in logs:
+        out[key] = logs[key]
+
+        if prevlogs is not None:
+            out[key] -= prevlogs[key]
+        out[key] /= logStep
+    return out
+
+
+def showLogs(text, logs):
     print("")
     print('-'*50)
     print(text)
@@ -119,7 +130,6 @@ def updateAndShowLogs(text, logs):
         formatCommand = ' '.join(['{:>16}' for x in range(nPredicts + 1)])
         print(formatCommand.format(*strSteps))
 
-        logs[key] /= logStep
         strLog = [key] + ["{:10.6f}".format(s) for s in logs[key]]
         print(formatCommand.format(*strLog))
 
@@ -244,13 +254,15 @@ def cpuStats():
 def adversarialTrainStep(dataLoader, model,
                          cpcCriterion, optimizerCPC,
                          speakerCriterion, optimizerPhone,
-                         clustering):
+                         clustering, loggingStep):
 
     model.train()
     speakerCriterion.train()
     cpcCriterion.train()
+    start_time = time.perf_counter()
 
-    logs = {"iter": 0, "loss_train_speak": 0, "acc_train_speak": 0}
+    logs = {"loss_train_speak": 0, "acc_train_speak": 0}
+    iter, lastlogs, n_examples = 0, None, 0
     for step, fulldata in enumerate(dataLoader):
 
         optimizerCPC.zero_grad()
@@ -270,6 +282,8 @@ def adversarialTrainStep(dataLoader, model,
             lossCluster = clustering(cFeature, labelPhone)
             totLoss += lossCluster.sum()
 
+        n_examples += batchData.size(0)
+
         if "locLoss_train_cpc" not in logs:
             logs["locLoss_train_cpc"] = np.zeros(allLosses.size(1))
             logs["locAcc_train_cpc"] = np.zeros(allLosses.size(1))
@@ -279,7 +293,6 @@ def adversarialTrainStep(dataLoader, model,
         logs["loss_train_speak"] += (lossSpeak.mean(dim=0).view(1)
                                      ).detach().cpu().numpy()
 
-        logs["iter"] += 1
         logs["locLoss_train_cpc"] += (allLosses.mean(dim=0)
                                       ).detach().cpu().numpy()
         if clustering is not None:
@@ -301,9 +314,23 @@ def adversarialTrainStep(dataLoader, model,
         optimizerPhone.step()
 
         logs["acc_train_speak"] += (accSpeak.mean(dim=0)).cpu().numpy()
+        iter += 1
 
-    updateAndShowLogs("Update %d, training loss:" %
-                      (logs["iter"] + 1), logs)
+        if (step + 1) % loggingStep == 0:
+            new_time = time.perf_counter()
+            elapsed = new_time - start_time
+            print(f"Update {step + 1}")
+            print(f"elapsed: {elapsed:.1f} s")
+            print(
+                f"{1000.0 * elapsed / loggingStep:.1f} ms per batch, {1000.0 * elapsed / n_examples:.1f} ms / example")
+            locLogs = updateLogs(logs, iter, lastlogs)
+            lastlogs = deepcopy(logs)
+            showLogs("Training loss", locLogs)
+            start_time, n_examples = new_time, 0
+
+    logs = updateLogs(logs, iter)
+    logs["iter"] = iter
+    showLogs(f"Average training loss on epoch ({iter+1} updates) :", logs)
     return logs
 
 
@@ -312,16 +339,20 @@ def trainStep(dataLoader,
               cpcCriterion,
               optimizer,
               scheduler,
-              clustering):
+              clustering,
+              loggingStep):
 
     if cpcModel.module.optimize:
         cpcModel.train()
     cpcCriterion.train()
 
-    logs = {"iter": 0}
+    start_time = time.perf_counter()
+    n_examples = 0
+    logs, lastlogs = {}, None
+    iter = 0
     for step, fulldata in enumerate(dataLoader):
-
         batchData, label = fulldata
+        n_examples += batchData.size(0)
         batchData = batchData.cuda(non_blocking=True)
         label = label.cuda(non_blocking=True)
         c_feature, encoded_data, label = cpcModel(batchData, label)
@@ -344,19 +375,30 @@ def trainStep(dataLoader,
             if clustering is not None:
                 logs["lossCluster_train"] = np.zeros(lossCluster.size(1))
 
-        logs["iter"] += 1
+        iter += 1
         logs["locLoss_train"] += (allLosses.mean(dim=0)).detach().cpu().numpy()
         logs["locAcc_train"] += (allAcc.mean(dim=0)).cpu().numpy()
         if clustering is not None:
             logs["lossCluster_train"] += (lossCluster.mean(dim=0)
                                           ).detach().cpu().numpy()
-
-    updateAndShowLogs("Update %d, training loss:" %
-                      (logs["iter"] + 1), logs)
+        if (step + 1) % loggingStep == 0:
+            new_time = time.perf_counter()
+            elapsed = new_time - start_time
+            print(f"Update {step + 1}")
+            print(f"elapsed: {elapsed:.1f} s")
+            print(
+                f"{1000.0 * elapsed / loggingStep:.1f} ms per batch, {1000.0 * elapsed / n_examples:.1f} ms / example")
+            locLogs = updateLogs(logs, iter, lastlogs)
+            lastlogs = deepcopy(logs)
+            showLogs("Training loss", locLogs)
+            start_time, n_examples = new_time, 0
 
     if scheduler is not None:
         scheduler.step()
 
+    logs = updateLogs(logs, iter)
+    logs["iter"] = iter
+    showLogs("Average training loss on epoch", locLogs)
     return logs
 
 
@@ -367,7 +409,11 @@ def valStep(dataLoader,
 
     cpcCriterion.eval()
     cpcModel.eval()
-    logs = {"iter": 0}
+    logs = {}
+    cpcCriterion.eval()
+    cpcModel.eval()
+    iter = 0
+
     for step, fulldata in enumerate(dataLoader):
 
         batchData, label = fulldata
@@ -387,14 +433,16 @@ def valStep(dataLoader,
             if clustering is not None:
                 logs["lossCluster_val"] = np.zeros(lossCluster.size(1))
 
-        logs["iter"] += 1
+        iter += 1
         logs["locLoss_val"] += allLosses.mean(dim=0).cpu().numpy()
         if clustering is not None:
             logs["lossCluster_val"] += (lossCluster.mean(dim=0)
                                         ).detach().cpu().numpy()
         logs["locAcc_val"] += allAcc.mean(dim=0).cpu().numpy()
 
-    updateAndShowLogs("Validation loss:", logs)
+    logs = updateLogs(logs, iter)
+    logs["iter"] = iter
+    showLogs("Validation loss:", logs)
     return logs
 
 
@@ -460,18 +508,19 @@ def run(trainDataset,
         valLoader = valDataset.getDataLoader(batchSize, 'sequential', False,
                                              numWorkers=0)
 
-        print("Training dataset %d batches, Validation dataset %d batches" %
-              (len(trainLoader), len(valLoader)))
+        print("Training dataset %d batches, Validation dataset %d batches, batch size %d" %
+              (len(trainLoader), len(valLoader), batchSize))
 
         if adversarial is not None:
             locLogsTrain = adversarialTrainStep(trainLoader, cpcModel,
                                                 cpcCriterion,
                                                 optimizer, adversarial,
-                                                optimAdv, clustering)
+                                                optimAdv, clustering,
+                                                logs["logging_step"])
         else:
             locLogsTrain = trainStep(
                 trainLoader, cpcModel, cpcCriterion, optimizer,
-                scheduler, clustering)
+                scheduler, clustering, logs["logging_step"])
 
         locLogsVal = valStep(valLoader, cpcModel, cpcCriterion, clustering)
 
@@ -482,7 +531,10 @@ def run(trainDataset,
 
         currentAccuracy = float(locLogsVal["locAcc_val"].mean())
         if currentAccuracy > bestAcc:
-            bestStateDict = cpcModel.module.state_dict()
+            try:
+                bestStateDict = cpcModel.module.state_dict()
+            except AttributeError:
+                bestStateDict = cpcModel.state_dict()
 
         for key, value in dict(locLogsTrain, **locLogsVal).items():
             if key not in logs:
@@ -495,8 +547,16 @@ def run(trainDataset,
 
         if pathCheckpoint is not None \
                 and (epoch % logs["saveStep"] == 0 or epoch == nEpoch-1):
-            stateDict = {"gEncoder": cpcModel.module.state_dict(),
-                         "cpcCriterion": cpcCriterion.module.state_dict(),
+            try:
+                modelStateDict = cpcModel.module.state_dict()
+            except AttributeError:
+                modelStateDict = cpcModel.state_dict()
+            try:
+                criterionStateDict = cpcCriterion.module.state_dict()
+            except AttributeError:
+                criterionStateDict = cpcCriterion.state_dict()
+            stateDict = {"gEncoder": modelStateDict,
+                         "cpcCriterion": criterionStateDict,
                          "optimizer": optimizer.state_dict(),
                          "best": bestStateDict}
 
@@ -506,9 +566,15 @@ def run(trainDataset,
 
 def main(args):
     args = parseArgs(args)
+    if args.distributed:
+        print('Distributed mode, moving to 1 process for data loading')
+        args.n_process_loader = 1
+        init_distributed_mode(args)
+    args.is_local_master = (not args.distributed) or (args.global_rank == 0)
 
     set_seed(args.random_seed)
-    logs, loadOptimizer = {"epoch": [], "iter":[], "saveStep": args.save_step}, False
+    logs = {"epoch": [], "iter": [], "saveStep": args.save_step}
+    loadOptimizer = False
     if args.pathCheckpoint is not None and not args.restart:
         cdata = getCheckpointData(args.pathCheckpoint)
         if cdata is not None:
@@ -521,6 +587,8 @@ def main(args):
                                     "n_nodes", "node_id", "n_gpu_per_node"})
             args.load, loadOptimizer = [data], True
             args.loadCriterion = True
+
+    logs["logging_step"] = args.logging_step
 
     print(f'CONFIG:\n{json.dumps(vars(args), indent=4, sort_keys=True)}')
     print('-' * 50)
@@ -538,8 +606,9 @@ def main(args):
 
     if args.pathVal is None:
         random.shuffle(seqTrain)
-        sizeTrain = int(0.8 * len(seqTrain))
+        sizeTrain = int(0.99 * len(seqTrain))
         seqTrain, seqVal = seqTrain[:sizeTrain], seqTrain[sizeTrain:]
+        print(f'Found files: {len(seqTrain)} train, {len(seqVal)} val')
     else:
         seqVal = filterSeqs(args.pathVal, seqNames)
 
@@ -552,6 +621,18 @@ def main(args):
         print("Loading the phone labels at " + args.pathPhone)
         phoneLabels, nPhones = parseSeqLabels(args.pathPhone)
         print(f"{nPhones} phones found")
+
+    if args.distributed:
+        def filter_distributed(files):
+            start = len(files) * args.global_rank // args.world_size
+            end = len(files) * (args.global_rank + 1) // args.world_size
+            return files[start:end]
+        print(
+            f'Initial worker files: {len(seqTrain)} train, {len(seqVal)} val')
+        seqTrain = filter_distributed(seqTrain)
+        seqVal = filter_distributed(seqVal)
+        print(
+            f'Current worker files: {len(seqTrain)} train, {len(seqVal)} val')
 
     print("")
     print(f'Loading audio data at {args.pathDB}')
@@ -682,10 +763,17 @@ def main(args):
                                                     gamma=0.5)
     scheduler = None
 
-    cpcModel = torch.nn.DataParallel(cpcModel,
-                                     device_ids=range(args.nGPU)).cuda()
-    cpcCriterion = torch.nn.DataParallel(cpcCriterion,
+    print('args.local_rank: ' + str(args.local_rank))
+    if args.distributed:
+        cpcModel = torch.nn.parallel.DistributedDataParallel(cpcModel, device_ids=[
+                                                             args.local_rank], output_device=args.local_rank, broadcast_buffers=True)
+        cpcCriterion = torch.nn.parallel.DistributedDataParallel(cpcCriterion, device_ids=[
+                                                                 args.local_rank], output_device=args.local_rank, broadcast_buffers=True)
+    else:
+        cpcModel = torch.nn.DataParallel(cpcModel,
                                          device_ids=range(args.nGPU)).cuda()
+        cpcCriterion = torch.nn.DataParallel(cpcCriterion,
+                                             device_ids=range(args.nGPU)).cuda()
 
     adversarial = None
     if args.adversarial:
@@ -702,7 +790,7 @@ def main(args):
         cpcModel,
         cpcCriterion,
         args.nEpoch,
-        args.pathCheckpoint,
+        args.pathCheckpoint if args.is_local_master else None,
         optimizer,
         scheduler,
         logs,
@@ -713,13 +801,20 @@ def main(args):
 def parseArgs(argv):
     # Run parameters
     parser = argparse.ArgumentParser(description='Trainer')
+
+    # multi-gpu / multi-node
+    parser.add_argument('--distributed', action='store_true')
+    parser.add_argument("--local_rank", type=int, default=-1,
+                        help="Multi-GPU - Local rank")
+    parser.add_argument("--master_port", type=int, default=-1,
+                        help="Master port (for multi-node SLURM jobs)")
     parser.add_argument(
         '--pathDB', type=str,
         default="/datasets01_101/LibriSpeech/022219/train-clean-100/")
-    parser.add_argument('--pathTrain', type=str,default=None)#
-                        #default="/datasets01_101/LibriSpeech/022219/LibriSpeech100_labels_split/train_split.txt")
-    parser.add_argument('--pathVal', type=str,default=None)
-                        #default="/datasets01_101/LibriSpeech/022219/LibriSpeech100_labels_split/test_split.txt")
+    parser.add_argument('--pathTrain', type=str, default=None)
+    # default="/datasets01_101/LibriSpeech/022219/LibriSpeech100_labels_split/train_split.txt")
+    parser.add_argument('--pathVal', type=str, default=None)
+    # default="/datasets01_101/LibriSpeech/022219/LibriSpeech100_labels_split/test_split.txt")
     parser.add_argument('--pathPhone', type=str, default=None)
     parser.add_argument('--hiddenEncoder', type=int, default=256)
     parser.add_argument('--hiddenGar', type=int, default=256)
@@ -784,6 +879,7 @@ def parseArgs(argv):
     parser.add_argument('--clustering_update', type=str, default='kmean',
                         choices=['kmean', 'dpmean'])
     parser.add_argument('--n_process_loader', type=int, default=50)
+    parser.add_argument('--logging_step', type=int, default=1000)
     parser.add_argument('--ignore_cache', action='store_true')
     args = parser.parse_args(argv)
 
