@@ -15,7 +15,7 @@ from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, \
     AdvSpeakerCriterion
 from feature_maker import FeatureModule, ModelClusterCombined, buildFeature, \
     toOneHot
-from distribued_training.distribued_mode import init_distributed_mode
+from distributed_training.distributed_mode import init_distributed_mode
 import psutil
 import sys
 
@@ -106,7 +106,7 @@ def set_seed(seed):
 def updateLogs(logs, logStep, prevlogs=None):
     out = {}
     for key in logs:
-        out[key] = logs[key]
+        out[key] = deepcopy(logs[key])
 
         if prevlogs is not None:
             out[key] -= prevlogs[key]
@@ -323,7 +323,7 @@ def adversarialTrainStep(dataLoader, model,
             print(f"elapsed: {elapsed:.1f} s")
             print(
                 f"{1000.0 * elapsed / loggingStep:.1f} ms per batch, {1000.0 * elapsed / n_examples:.1f} ms / example")
-            locLogs = updateLogs(logs, iter, lastlogs)
+            locLogs = updateLogs(logs, loggingStep, lastlogs)
             lastlogs = deepcopy(logs)
             showLogs("Training loss", locLogs)
             start_time, n_examples = new_time, 0
@@ -388,7 +388,7 @@ def trainStep(dataLoader,
             print(f"elapsed: {elapsed:.1f} s")
             print(
                 f"{1000.0 * elapsed / loggingStep:.1f} ms per batch, {1000.0 * elapsed / n_examples:.1f} ms / example")
-            locLogs = updateLogs(logs, iter, lastlogs)
+            locLogs = updateLogs(logs, loggingStep, lastlogs)
             lastlogs = deepcopy(logs)
             showLogs("Training loss", locLogs)
             start_time, n_examples = new_time, 0
@@ -398,7 +398,7 @@ def trainStep(dataLoader,
 
     logs = updateLogs(logs, iter)
     logs["iter"] = iter
-    showLogs("Average training loss on epoch", locLogs)
+    showLogs("Average training loss on epoch", logs)
     return logs
 
 
@@ -644,7 +644,8 @@ def main(args):
                                   len(speakers),
                                   dataAugment=args.pathDataAugment,
                                   probaAugment=args.probaDataAugment,
-                                  nProcessLoader=args.n_process_loader)
+                                  nProcessLoader=args.n_process_loader,
+                                  MAX_SIZE_LOADED=args.max_size_loaded)
     print("Training dataset loaded")
     print("")
 
@@ -878,9 +879,10 @@ def parseArgs(argv):
     parser.add_argument('--probaDataAugment', default=0.5, type=float)
     parser.add_argument('--clustering_update', type=str, default='kmean',
                         choices=['kmean', 'dpmean'])
-    parser.add_argument('--n_process_loader', type=int, default=50)
+    parser.add_argument('--n_process_loader', type=int, default=8)
     parser.add_argument('--logging_step', type=int, default=1000)
     parser.add_argument('--ignore_cache', action='store_true')
+    parser.add_argument('--max_size_loaded', type=int, default=4000000000)
     args = parser.parse_args(argv)
 
     # set it up if needed, so that it is dumped along with other args
@@ -900,5 +902,6 @@ def parseArgs(argv):
 
 
 if __name__ == "__main__":
+    torch.multiprocessing.set_start_method('spawn')
     args = sys.argv[1:]
     main(args)

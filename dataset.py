@@ -53,7 +53,7 @@ class AudioBatchData(Dataset):
         self.probaAugment = probaAugment
         self.fileLoader = FileLoader(self.probaAugment, self.dataAugment)
         self.seqNames = [(s, self.dbPath / x) for s, x in seqNames]
-        self.reload_pool = None
+        self.reload_pool = Pool(nProcessLoader)
 
         self.prepare()
         self.speakers = list(range(nSpeakers))
@@ -65,6 +65,7 @@ class AudioBatchData(Dataset):
             self.sizeWindow // self.phoneSize
 
         self.phoneLabelsDict = deepcopy(phoneLabelsDict)
+        self.loadNextPack(first=True)
         self.loadNextPack()
         self.doubleLabels = False
 
@@ -96,16 +97,11 @@ class AudioBatchData(Dataset):
             del self.seqLabel
 
     def prepare(self):
-        nSeqs = len(self.seqNames)
         random.shuffle(self.seqNames)
         start_time = time.time()
 
-        # Data
-        nprocess = min(self.nProcessLoader, nSeqs)
-
         print("Checking length...")
-        with Pool(nprocess) as p:
-            allLength = p.map(extractLength, self.seqNames)
+        allLength = self.reload_pool.map(extractLength, self.seqNames)
 
         self.packageIndex, self.totSize = [], 0
         start, packageSize = 0, 0
@@ -129,31 +125,21 @@ class AudioBatchData(Dataset):
     def getNPacks(self):
         return len(self.packageIndex)
 
-    def loadNextPack(self):
+    def loadNextPack(self, first=False):
         self.clear()
-        self.currentPack = self.nextPack
-        seqStart, seqEnd = self.packageIndex[self.currentPack]
-        nprocess = min(self.nProcessLoader, seqEnd - seqStart)
-        start_time = time.time()
-        if self.reload_pool is not None:
+        if not first:
+            self.currentPack = self.nextPack
+            start_time = time.time()
             print('Joining pool')
-            self.reload_pool.join()
+            self.r.wait()
             print(f'Joined process, elapsed={time.time()-start_time:.3f} secs')
-        else:
-            with Pool(nprocess) as p:
-                self.nextData = p.map(self.fileLoader.loadFile,
-                                      self.seqNames[seqStart:seqEnd])
-            print(
-                f'Loaded {seqEnd - seqStart} sequences in {time.time() - start_time:.3f} sec')
-        self.parseNextDataBlock()
-        del self.nextData
+            self.nextData = self.r.get()
+            self.parseNextDataBlock()
+            del self.nextData
         self.nextPack = (self.currentPack + 1) % len(self.packageIndex)
         seqStart, seqEnd = self.packageIndex[self.nextPack]
-
-        self.reload_pool = Pool(nprocess)
-        self.nextData = self.reload_pool.map(self.fileLoader.loadFile,
-                                             self.seqNames[seqStart:seqEnd])
-        self.reload_pool.close()
+        self.r = self.reload_pool.map_async(self.fileLoader.loadFile,
+                                                   self.seqNames[seqStart:seqEnd])
 
     def parseNextDataBlock(self):
 
@@ -461,6 +447,8 @@ def findAllSeqs(dirName,
             print(f'Ran in an error while loading {cache_path}: {err}')
         print('Could not load cache, rebuilding')
 
+    if dirName[-1] != os.sep:
+        dirName += os.sep
     prefixSize = len(dirName)
     speakersTarget = {}
     outSequences = []
