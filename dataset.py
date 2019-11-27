@@ -415,7 +415,8 @@ def extractLength(couple):
 
 def findAllSeqs(dirName,
                 extension='.flac',
-                loadCache=False):
+                loadCache=False,
+                speaker_level=1):
     r"""
     Lists all the sequences with the given extension in the dirName directory.
     Output:
@@ -436,6 +437,19 @@ def findAllSeqs(dirName,
             \..
                 ...
                 seqName.extension
+
+    Adjust the value of speaker_level if you want to choose which level of
+    directory defines the speaker label. Ex if speaker_level == 2 then the
+    dataset should be organized in the following fashion
+    \dirName
+        \crappy_label
+            \speaker_label
+                \..
+                    ...
+                    seqName.extension
+    Set speaker_label == 0 if no speaker label will be retrieved no matter the
+    organization of the dataset.
+
     """
     cache_path = os.path.join(dirName, '_seqs_cache.txt')
     if loadCache:
@@ -456,7 +470,7 @@ def findAllSeqs(dirName,
         filtered_files = [f for f in filenames if f.endswith(extension)]
 
         if len(filtered_files) > 0:
-            speakerStr = root[prefixSize:].split(os.sep)[0]
+            speakerStr = (os.sep).join(root[prefixSize:].split(os.sep)[:speaker_level])
             if speakerStr not in speakersTarget:
                 speakersTarget[speakerStr] = len(speakersTarget)
             speaker = speakersTarget[speakerStr]

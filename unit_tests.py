@@ -42,9 +42,27 @@ class TestDataLoader(unittest.TestCase):
                             os.path.isdir(os.path.join(self.pathDB, f))]
         eq_(speakers, expectedSpeakers)
 
+    def testFindAllSeqsCustomSpeakers(self):
+        seqNames, speakers = findAllSeqs(self.pathDB,
+                                         extension=".flac",
+                                         speaker_level=2)
+        outDirs = [f for f in os.listdir(self.pathDB) if
+                            os.path.isdir(os.path.join(self.pathDB, f))]
+        expectedSpeakers = []
+        for dir in outDirs:
+            full_dir = os.path.join(self.pathDB, dir)
+            expectedSpeakers += [os.path.join(dir, f) for f in os.listdir(full_dir) if
+                                os.path.isdir(os.path.join(full_dir, f))]
+        eq_(speakers, expectedSpeakers)
+
     def testFindAllSeqs0Speakers(self):
         seqNames, speakers = findAllSeqs("/datasets01_101/LibriSpeech/022219/train-clean-100/103/1240",
                                          extension=".flac")
+        eq_(speakers, [''])
+
+    def testFindAllSeqs0SpeakersForced(self):
+        seqNames, speakers = findAllSeqs("/datasets01_101/LibriSpeech/022219/train-clean-100/",
+                                         extension=".flac", speaker_level=0)
         eq_(speakers, [''])
 
 
