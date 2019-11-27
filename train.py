@@ -155,7 +155,7 @@ def getEncoder(args):
 
 
 def getAR(args):
-    if args.transformer:
+    if args.arMode == 'transformer':
         from transformers import buildTransformerAR
         arNet = buildTransformerAR(args.hiddenEncoder, 1,
                                    args.sizeWindow // 160, args.abspos)
@@ -164,7 +164,7 @@ def getAR(args):
         from model import BiDIRARTangled
         arNet = BiDIRARTangled(args.hiddenEncoder, args.hiddenGar,
                                args.nLevelsGRU)
-    elif args.no_ar:
+    elif args.arMode == 'no_ar':
         from model import NoAr
         arNet = NoAr()
     else:
@@ -846,7 +846,6 @@ def parseArgs(argv):
     parser.add_argument('--disable_offset', action='store_true')
     parser.add_argument('--restart', action='store_true')
     parser.add_argument('--abspos', action='store_true')
-    parser.add_argument('--transformer', action='store_true')
     parser.add_argument('--cpc_mode', type=str, default=None,
                         choices=['reverse', 'bert', 'none'])
     parser.add_argument('--encoder_type', type=str,
@@ -856,10 +855,9 @@ def parseArgs(argv):
     parser.add_argument('--random_seed', type=int, default=None)
     parser.add_argument('--adversarial', action='store_true')
     parser.add_argument('--save_step', type=int, default=5)
-    parser.add_argument('--no_ar', action='store_true')
     parser.add_argument('--speakerEmbedding', type=int, default=0)
     parser.add_argument('--arMode', default='LSTM',
-                        choices=['GRU', 'LSTM', 'RNN'])
+                        choices=['GRU', 'LSTM', 'RNN', 'no_ar', 'transformer'])
     parser.add_argument('--nBN', type=int, default=3)
     parser.add_argument('--normMode', type=str, default='layerNorm',
                         choices=['instanceNorm', 'ID', 'layerNorm',
@@ -896,7 +894,7 @@ def parseArgs(argv):
         f"number GPU detected: {torch.cuda.device_count()}"
     print(f"Let's use {args.nGPU} GPUs!")
 
-    if args.no_ar:
+    if args.arMode == 'no_ar':
         args.hiddenGar = args.hiddenEncoder
     return args
 
