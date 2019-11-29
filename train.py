@@ -477,7 +477,6 @@ def run(trainDataset,
         cpuStats()
 
         if clustering is not None:
-            dataAugment = clustering.module.dataAugment is not None
             cpcModel.eval()
             trainDataset.doubleLabels = False
             clustering.module.updateCLusters(trainDataset.getDataLoader(batchSize, 'uniform',
@@ -485,18 +484,13 @@ def run(trainDataset,
                                              FeatureModule(cpcModel.module, False))
             if clustering.module.canRun():
                 for dataset, status in [(trainDataset, 'train'), (valDataset, 'val')]:
-                    if dataAugment:
-                        dataset.disableDataAugmentation()
                     phoneLabels, phoneFill = \
                         buildNewPhoneDict(dataset.dbPath,
                                           dataset.getSeqNames(),
                                           cpcModel.module,
                                           clustering.module.clusters,
                                           clustering.module.k)
-                    argDataAugment = None
-                    if dataAugment and status == 'train':
-                        argDataAugment = clustering.module.dataAugment
-                    dataset.resetPhoneLabels(phoneLabels, 160, argDataAugment)
+                    dataset.resetPhoneLabels(phoneLabels, 160)
                     fillingStatus = (phoneFill == 0).sum().item()
                     print(
                         f"{fillingStatus} clusters empty out of {clustering.module.k}")
@@ -644,8 +638,6 @@ def main(args):
                                   seqTrain,
                                   phoneLabels,
                                   len(speakers),
-                                  dataAugment=args.pathDataAugment,
-                                  probaAugment=args.probaDataAugment,
                                   nProcessLoader=args.n_process_loader,
                                   MAX_SIZE_LOADED=args.max_size_loaded)
     print("Training dataset loaded")
@@ -736,7 +728,6 @@ def main(args):
                                        args.cluster_delay,
                                        args.cluster_iter,
                                        args.clustering_update).cuda()
-        clustering.dataAugment = args.pathDataAugment
         clustering = torch.nn.DataParallel(clustering,
                                            device_ids=range(args.nGPU))
 
@@ -875,8 +866,6 @@ def parseArgs(argv):
     parser.add_argument('--cluster_delay', type=int, default=0)
     parser.add_argument('--cluster_iter', type=int, default=100)
     parser.add_argument('--CTC', action='store_true')
-    parser.add_argument('--pathDataAugment', default=None, type=str)
-    parser.add_argument('--probaDataAugment', default=0.5, type=float)
     parser.add_argument('--clustering_update', type=str, default='kmean',
                         choices=['kmean', 'dpmean'])
     parser.add_argument('--n_process_loader', type=int, default=8)

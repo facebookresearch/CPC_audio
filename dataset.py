@@ -21,8 +21,6 @@ class AudioBatchData(Dataset):
                  phoneLabelsDict,
                  nSpeakers,
                  nProcessLoader=50,
-                 dataAugment=None,
-                 probaAugment=0.5,
                  MAX_SIZE_LOADED=4000000000):
         """
         Args:
@@ -38,10 +36,6 @@ class AudioBatchData(Dataset):
            - nSpeakers (int): number of speakers to expect.
            - nProcessLoader (int): number of processes to call when loading the
                                    data from the disk
-           - dataAugment (str): path to a directory containing the augmented
-                                data. Must have the same structure as the
-                                main dataset directory (to be depreciated)
-           - probaAugment (float): probability to pick an augmented data
            - MAX_SIZE_LOADED (int): target maximal size of the floating array
                                     containing all loaded data.
         """
@@ -49,9 +43,6 @@ class AudioBatchData(Dataset):
         self.nProcessLoader = nProcessLoader
         self.dbPath = Path(path)
         self.sizeWindow = sizeWindow
-        self.dataAugment = dataAugment
-        self.probaAugment = probaAugment
-        self.fileLoader = FileLoader(self.probaAugment, self.dataAugment)
         self.seqNames = [(s, self.dbPath / x) for s, x in seqNames]
         self.reload_pool = Pool(nProcessLoader)
 
@@ -69,17 +60,10 @@ class AudioBatchData(Dataset):
         self.loadNextPack()
         self.doubleLabels = False
 
-    def resetPhoneLabels(self, newPhoneLabels, step, dataAugment,
-                         probaAugment=0.5):
+    def resetPhoneLabels(self, newPhoneLabels, step):
         self.phoneSize = step
         self.phoneStep = self.sizeWindow // self.phoneSize
         self.phoneLabelsDict = deepcopy(newPhoneLabels)
-        self.dataAugment = dataAugment
-        self.probaAugment = probaAugment
-        self.loadNextPack()
-
-    def disableDataAugmentation(self):
-        self.dataAugment = None
         self.loadNextPack()
 
     def splitSeqTags(seqName):
@@ -141,8 +125,8 @@ class AudioBatchData(Dataset):
             del self.nextData
         self.nextPack = (self.currentPack + 1) % len(self.packageIndex)
         seqStart, seqEnd = self.packageIndex[self.nextPack]
-        self.r = self.reload_pool.map_async(self.fileLoader.loadFile,
-                                                   self.seqNames[seqStart:seqEnd])
+        self.r = self.reload_pool.map_async(loadFile,
+                                            self.seqNames[seqStart:seqEnd])
 
     def parseNextDataBlock(self):
 
@@ -266,19 +250,11 @@ class AudioBatchData(Dataset):
                            totSize, numWorkers, f16)
 
 
-class FileLoader():
-    def __init__(self, probaAugment, pathDataAugment):
-        self.probaAugment = probaAugment
-        self.pathDataAugment = pathDataAugment
-
-    def loadFile(self, data):
-        speaker, fullPath = data
-        seqName = fullPath.stem
-        p = random.random()
-        if self.pathDataAugment is not None and p < self.probaAugment:
-            fullPath = self.pathDataAugment / fullPath.name
-        seq = torchaudio.load(fullPath)[0].view(-1)
-        return speaker, seqName, seq
+def loadFile(data):
+    speaker, fullPath = data
+    seqName = fullPath.stem
+    seq = torchaudio.load(fullPath)[0].view(-1)
+    return speaker, seqName, seq
 
 
 class AudioLoader(object):
