@@ -38,6 +38,9 @@ class FeatureModule(torch.nn.Module):
         self.featureMaker = featureMaker
         self.collapse = collapse
 
+    def getDownsamplingFactor(self):
+        return self.featureMaker.gEncoder.DOWNSAMPLING
+
     def forward(self, data):
 
         batchAudio, label = data
@@ -55,6 +58,9 @@ class ModelPhoneCombined(torch.nn.Module):
         self.model = model
         self.criterion = criterion
         self.oneHot = oneHot
+
+    def getDownsamplingFactor(self):
+        return self.model.getDownsamplingFactor()
 
     def forward(self, data):
         c_feature = self.model(data)
@@ -80,6 +86,10 @@ class ModelClusterCombined(torch.nn.Module):
         self.cluster = cluster
         self.nk = nk
         self.outFormat = outFormat
+
+    def getDownsamplingFactor(self):
+        return self.model.getDownsamplingFactor()
+
 
     def forward(self, data):
         c_feature = self.model(data)
@@ -126,7 +136,7 @@ def buildFeature(featureMaker, seqPath, strict=False,
             features = featureMaker((subseq, None))
             if seqNorm:
                 features = seqNormalization(features)
-        delta = (sizeSeq - start) // featureMaker.featureMaker.gEncoder.DOWNSAMPLING
+        delta = (sizeSeq - start) // featureMaker.getDownsamplingFactor()
         out.append(features[:, -delta:].detach().cpu())
 
     out = torch.cat(out, dim=1)

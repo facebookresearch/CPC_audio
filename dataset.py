@@ -86,6 +86,9 @@ class AudioBatchData(Dataset):
         path = os.path.normpath(seqName)
         return path.split(os.sep)
 
+    def getSeqNames(self):
+        return [str(x[1]) for x in self.seqNames]
+
     def clear(self):
         if 'data' in self.__dict__:
             del self.data

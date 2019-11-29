@@ -6,18 +6,20 @@ import torch
 import time
 from copy import deepcopy
 import random
+import psutil
+import sys
 
 from dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels
 from model import CPCModel, ConcatenatedModel, CPCBertModel
 from criterion import CPCUnsupersivedCriterion, SpeakerCriterion, \
-    PhoneCriterion, CPCBertCriterion, NoneCriterion, \
-    DeepEmbeddedClustering, DeepClustering, CTCPhoneCriterion, CTCCLustering, \
+    PhoneCriterion , NoneCriterion, \
+    CTCPhoneCriterion, \
     AdvSpeakerCriterion
+from criterion.research import CPCBertCriterion, DeepEmbeddedClustering, \
+    DeepClustering, CTCCLustering
 from feature_maker import FeatureModule, ModelClusterCombined, buildFeature, \
     toOneHot
 from distributed_training.distributed_mode import init_distributed_mode
-import psutil
-import sys
 
 
 def buildNewPhoneDict(pathDIR, seqNames, model, clusters, nk):
@@ -480,7 +482,7 @@ def run(trainDataset,
             trainDataset.doubleLabels = False
             clustering.module.updateCLusters(trainDataset.getDataLoader(batchSize, 'uniform',
                                                                         True, numWorkers=0),
-                                             cpcModel.module)
+                                             FeatureModule(cpcModel.module, False))
             if clustering.module.canRun():
                 for dataset, status in [(trainDataset, 'train'), (valDataset, 'val')]:
                     if dataAugment:

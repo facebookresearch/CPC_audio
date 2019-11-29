@@ -4,6 +4,9 @@ import torchaudio
 import os
 import torch
 import progressbar
+from criterion.seq_alignment import NeedlemanWunschAlignScore
+from criterion import PhoneCriterion
+from train import loadModel
 
 PHONE_LIST = ['h#', 'epi', 'pau', 'd', 'g', 'p', 'b', 't', 'k', 'dx', 'q',
               'jh', 'ch', 's', 'sh', 'z',
@@ -33,34 +36,6 @@ PHONE_MATCH = {item: index for index, item in enumerate(PHONE_LIST)}
 class Struct:
     def __init__(self, **entries):
         self.__dict__.update(entries)
-
-
-def NeedlemanWunschAlignScore(seq1, seq2, d, m, r, normalize = True):
-
-    N1, N2 = len(seq1), len(seq2)
-
-    # Fill up the errors
-    tmpRes_ = [[None for x in range(N2 + 1)] for y in range(N1 + 1)]
-    for i in range(N1 + 1):
-        tmpRes_[i][0] = i * d
-    for j in range(N2 + 1):
-        tmpRes_[0][j] = j * d
-
-
-    for i in range(N1):
-        for j in range(N2):
-
-            match = r if seq1[i] == seq2[j] else m
-            v1 = tmpRes_[i][j] + match
-            v2 = tmpRes_[i + 1][j] + d
-            v3 = tmpRes_[i][j + 1] + d
-            tmpRes_[i + 1][j + 1] = max(v1, max(v2, v3))
-
-    i = j = 0
-    res = -tmpRes_[N1][N2]
-    if normalize:
-        res /= float(N1)
-    return res
 
 
 def getSequenceFromFile(pathFile, sequenceMatch):
@@ -278,7 +253,8 @@ def getCPCModel(pathModel, nPhones):
 
     _, _, locArgs = cdata
     model = loadModel([pathModel])[0]
-    criterion = PhoneCriterion(locArgs.hiddenGar, nPhones, locArgs.onEncoder, locArgs.nItemsSupervised)
+    criterion = PhoneCriterion(locArgs.hiddenGar, nPhones, locArgs.onEncoder,
+                               locArgs.nItemsSupervised)
     state_dict = torch.load(pathModel)
     criterion.load_state_dict(state_dict["cpcCriterion"])
 
@@ -286,8 +262,6 @@ def getCPCModel(pathModel, nPhones):
 
 
 if __name__ == "__main__":
-    from criterion import PhoneCriterion
-    from train import loadModel
 
     parser = argparse.ArgumentParser(description='Trainer')
     subparsers = parser.add_subparsers(dest="command")

@@ -198,7 +198,8 @@ def loadDimReduction(path, centroidLimits):
 
 
 if __name__ == "__main__":
-
+    import sys
+    sys.path.append('..')
     from dataset import findAllSeqs, filterSeqs, AudioBatchData
     from train import loadModel, getCheckpointData
     from feature_maker import FeatureModule

@@ -6,7 +6,7 @@ from clustering import kMeanCluster
 from feature_maker import buildFeature, FeatureModule, \
     ModelPhoneCombined, loadCriterion, \
     ModelClusterCombined
-from dim_reduction import loadDimReduction
+from criterion.research.dim_reduction import loadDimReduction
 import torch
 import progressbar
 import argparse
