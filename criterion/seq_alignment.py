@@ -4,7 +4,7 @@ from multiprocessing import Lock, Manager, Process
 from copy import deepcopy
 
 
-def beamSearch(score_preds, nKeep, blankLabel):
+def beam_search(score_preds, nKeep, blankLabel):
 
     T, P = score_preds.shape
     beams = set([''])
@@ -110,7 +110,7 @@ def NeedlemanWunschAlignScore(seq1, seq2, d, m, r, normalize = True):
     return res
 
 
-def getSeqPER(seqLabels, detectedLabels):
+def get_seq_PER(seqLabels, detectedLabels):
     return NeedlemanWunschAlignScore(seqLabels, detectedLabels, -1, -1, 0,
                                     normalize=True)
 
@@ -134,9 +134,9 @@ def getPER(dataLoader, featureMaker, blankLabel):
         def per(rank, outScore):
             S = int(targetSize[rank])
             seqLabels = labels[rank, :S]
-            preds = beamSearch(output[rank],
+            preds = beam_search(output[rank],
                                100, blankLabel)[0][1]
-            value = getSeqPER(seqLabels, preds)
+            value = get_seq_PER(seqLabels, preds)
             with lock:
                 outScore.value += value
 

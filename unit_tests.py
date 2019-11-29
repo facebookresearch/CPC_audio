@@ -4,7 +4,7 @@ import os
 from dataset import AudioBatchData, findAllSeqs, filterSeqs
 from nose.tools import eq_, ok_
 from math import log
-from dim_reduction import PCA
+from criterion.research.dim_reduction import PCA
 # from phone_cluster_correlation import convertToProbaMatrix, getMutualInfo, \
 #                                       getEntropy, featureLabelToRepMat, \
 #                                       getSegsStats
@@ -354,7 +354,7 @@ class TestLabelProcess(unittest.TestCase):
         pass
 
     def testLabelCollapse(self):
-        from criterion import collapseLabelChain
+        from criterion.seq_alignment import collapseLabelChain
 
         inputChain = torch.tensor([[0, 0, 0, 1, 1, 2, 0, 2, 2],
                                    [1, 1, 1, 1, 1, 2, 2, 2, 0]],
@@ -369,23 +369,8 @@ class TestLabelProcess(unittest.TestCase):
         eq_((outChain - target).sum().item(), 0)
         eq_((targetSize - sizes).sum().item(), 0)
 
-    def testClearBlank(self):
-        from criterion import removeBlanks
-
-        blankLabel = 22
-        inputChain = torch.tensor([0, 0, 22, 22, 1, 22, 0, 0, 0],
-                                  dtype=torch.int64)
-        inputSize = 6
-        outChain, outSize = removeBlanks(inputChain, inputSize, blankLabel)
-
-        targetChain = torch.tensor([0, 0, 1, 0, 0, 0],
-                                   dtype=torch.int64)
-
-        eq_(outSize.item(), 3)
-        eq_((outChain - targetChain).sum(), 0)
-
-    def testBeamSearch(self):
-        from beam_search import beamSearch
+    def test_beam_search(self):
+        from criterion.seq_alignment import beam_search
         import numpy as np
         blankLabel = 2
         nKeep = 10
@@ -394,7 +379,7 @@ class TestLabelProcess(unittest.TestCase):
                          [0.4, 0.2, 0.6],
                          [0.01, 0.3, 0.]])
 
-        output = beamSearch(data, nKeep, blankLabel)
+        output = beam_search(data, nKeep, blankLabel)
 
         expectedPosOutput = [(0.036, [1, 1]), (0.0004, [0]), (0.012, [1]),
                              (0.024, [1, 0, 1]), (0.0002, [0,1,0]), (0.0, [1, 1, 1]),
@@ -406,8 +391,8 @@ class TestLabelProcess(unittest.TestCase):
             eq_(item[1], output[index][1])
             ok_(abs(item[0] - output[index][0])< 1e-08)
 
-    def testBigBeamSearch(self):
-        from beam_search import beamSearch
+    def test_big_beam_search(self):
+        from criterion.seq_alignment import beam_search
         import numpy as np
         blankLabel = 11
         nKeep = 10
@@ -415,7 +400,7 @@ class TestLabelProcess(unittest.TestCase):
         data = np.array([[0.1, 0.2,  0.,  0.,  0.,  0.,  0., 0.01,  0., 0.1, 0.99, 0.1],
                          [0.1, 0.2, 0.6, 0.1, 0.9,  0.,  0., 0.01,  0., 0.9, 1., 0.]])
 
-        output = beamSearch(data, nKeep, blankLabel)[0]
+        output = beam_search(data, nKeep, blankLabel)[0]
 
         expectedOutput = (1.09, [10])
         eq_(output[0], expectedOutput[0])
@@ -428,10 +413,10 @@ class TestPER(unittest.TestCase):
         pass
 
     def testPER(self):
-        from eval_PER import getSeqPER
+        from criterion.seq_alignment import get_seq_PER
 
-        refSeq = [0, 1, 1, 2, 0, 2, 2]
-        predSeq = [1, 1, 2, 2, 0, 0]
+        ref_seq = [0, 1, 1, 2, 0, 2, 2]
+        pred_seq = [1, 1, 2, 2, 0, 0]
 
-        expectedPER = 4. / 7.
-        eq_(getSeqPER(refSeq, predSeq), expectedPER)
+        expected_PER = 4. / 7.
+        eq_(get_seq_PER(ref_seq, pred_seq), expected_PER)
