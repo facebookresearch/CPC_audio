@@ -122,6 +122,7 @@ def getPER(dataLoader, featureMaker, blankLabel):
 
     out = 0
     n_items = 0
+    n_keep_beam_search = 100
     for index, data in enumerate(dataLoader):
 
         bar.update(index)
@@ -135,7 +136,7 @@ def getPER(dataLoader, featureMaker, blankLabel):
             S = int(targetSize[rank])
             seqLabels = labels[rank, :S]
             preds = beam_search(output[rank],
-                               100, blankLabel)[0][1]
+                                n_keep_beam_search, blankLabel)[0][1]
             value = get_seq_PER(seqLabels, preds)
             with lock:
                 outScore.value += value

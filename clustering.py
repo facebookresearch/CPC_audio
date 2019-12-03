@@ -6,7 +6,6 @@ import sys
 import os
 import json
 from random import shuffle
-from plot import plotHist
 from criterion.research.clustering import kMeanCluster, kMeanGPU, fastDPMean, \
     distanceEstimation
 from criterion.research.dim_reduction import loadDimReduction
@@ -102,11 +101,6 @@ if __name__ == "__main__":
         pathDict = os.path.join(args.pathOutput, "quantiles.json")
         with open(pathDict, 'w') as f:
             json.dump(outDict, f, indent=2)
-
-        distRepartition = np.array(distRepartition)
-
-        pathHist = os.path.join(args.pathOutput, "distance_distribution.png")
-        plotHist(distRepartition, 300, pathHist)
 
         pathRaw = os.path.join(args.pathOutput, "raw.npy")
         with open(pathRaw, 'wb') as f:

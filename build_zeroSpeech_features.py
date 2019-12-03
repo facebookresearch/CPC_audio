@@ -1,11 +1,10 @@
 import os
 import json
-from train import loadModel
 from dataset import findAllSeqs
 from clustering import kMeanCluster
-from feature_maker import buildFeature, FeatureModule, \
-    ModelPhoneCombined, loadCriterion, \
-    ModelClusterCombined
+from feature_loader import buildFeature, FeatureModule, \
+    ModelPhoneCombined, loadSupervisedCriterion, \
+    ModelClusterCombined, loadModel
 from criterion.research.dim_reduction import loadDimReduction
 import torch
 import progressbar
@@ -115,7 +114,7 @@ if __name__ == "__main__":
     featureMaker.collapse = False
 
     if args.addCriterion:
-        criterion, nPhones = loadCriterion(args.pathCheckpoint)
+        criterion, nPhones = loadSupervisedCriterion(args.pathCheckpoint)
         featureMaker = ModelPhoneCombined(featureMaker, criterion,
                                           nPhones, args.oneHot)
     if args.dimReduction is not None:

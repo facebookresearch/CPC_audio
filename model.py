@@ -265,14 +265,11 @@ class CPCModel(nn.Module):
 
     def __init__(self,
                  encoder,
-                 AR,
-                 cumNorm=False):
+                 AR):
 
         super(CPCModel, self).__init__()
         self.gEncoder = encoder
         self.gAR = AR
-        self.cumNorm = cumNorm
-
     def forward(self, batchData, label):
         encodedData = self.gEncoder(batchData).permute(0, 2, 1)
         cFeature = self.gAR(encodedData)

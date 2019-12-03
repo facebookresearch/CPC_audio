@@ -5,8 +5,7 @@ import json
 import ABX.abx_group_computation as abx_g
 import ABX.abx_iterators as abx_it
 from dataset import findAllSeqs
-from feature_maker import buildFeature, FeatureModule
-from train import loadModel
+from feature_loader import buildFeature, FeatureModule, loadModel
 from pathlib import Path
 
 
@@ -136,9 +135,9 @@ def parse_args(argv):
     parser_db = subparsers.add_parser('from_pre_computed')
     update_base_parser(parser_db)
     parser_db.add_argument('path_features', type=str,
-                            help="Path to pre-computed torch features (.pt)")
+                           help="Path to pre-computed torch features (.pt)")
     parser_db.add_argument('--file_extension', type=str,
-                                   default='.pt')
+                           default='.pt')
 
     # multi-gpu / multi-node
     return base_parser.parse_args(argv)
@@ -178,7 +177,8 @@ def main(argv):
     if args.debug:
         seq_list = seq_list[:1000]
 
-    scores = ABX(feature_function, args.path_item_file, seq_list, distance_mode,
+    scores = ABX(feature_function, args.path_item_file,
+                 seq_list, distance_mode,
                  step_feature, modes,
                  cuda=args.cuda,
                  seq_norm=args.seq_norm,
