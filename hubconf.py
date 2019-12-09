@@ -45,8 +45,3 @@ def CPCModel(pretrained=False, *args, **kwargs):
     if pretrained:
         model.load_state_dict(checkpoint["weights"], strict=False)
     return model
-
-
-if __name__== "__main__":
-    import torch
-    CPCModel(pretrained=True)
