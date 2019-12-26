@@ -150,6 +150,7 @@ def main(argv):
     if args.load == 'from_checkpoint':
         # Checkpoint
         model = loadModel([args.path_checkpoint])[0]
+        model.gAR.keepHidden = True
         # Feature maker
         feature_maker = FeatureModule(model, args.get_encoded).cuda().eval()
 
