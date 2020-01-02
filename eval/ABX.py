@@ -4,6 +4,8 @@ import torch
 import json
 import ABX.abx_group_computation as abx_g
 import ABX.abx_iterators as abx_it
+
+sys.path.append('..')
 from dataset import findAllSeqs
 from feature_loader import buildFeature, FeatureModule, loadModel
 from pathlib import Path
