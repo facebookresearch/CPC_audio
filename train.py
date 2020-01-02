@@ -93,6 +93,13 @@ def cpuStats():
     print(psutil.virtual_memory())
 
 
+def ramp_scheduling_function(n_epoch_ramp, epoch):
+    if epoch >= n_epoch_ramp:
+        return 1
+    else:
+        return (epoch + 1) / n_epoch_ramp
+
+
 def getCriterion(args, downsampling, nSpeakers, nPhones):
     dimFeatures = args.hiddenGar if not args.onEncoder else args.hiddenEncoder
     if not args.supervised:
@@ -632,11 +639,19 @@ def main(args):
             with open(args.pathCheckpoint + "_args.json", 'w') as file:
                 json.dump(vars(args), file, indent=2)
 
+    scheduler = None
     if args.schedulerStep > 0:
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
                                                     args.schedulerStep,
                                                     gamma=0.5)
-    scheduler = None
+    if args.schedulerRamp is not None:
+        n_epoch = args.schedulerRamp
+        print(f"Ramp activated. n_e = {n_epoch}")
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,
+                                                      lr_lambda=lambda epoch : ramp_scheduling_function(n_epoch, epoch),
+                                                      last_epoch=-1)
+        for i in range(len(logs["epoch"])):
+            scheduler.step()
 
     print('args.local_rank: ' + str(args.local_rank))
     if args.distributed:

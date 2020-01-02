@@ -42,7 +42,8 @@ def set_default_cpc_config(parser):
                                  'batchNorm'])
     parser.add_argument('--dropout', action='store_true')
     parser.add_argument('--rnnMode', type=str, default='transformer',
-                        choices=['transformer', 'RNN', 'LSTM', 'linear'])
+                        choices=['transformer', 'RNN', 'LSTM', 'linear',
+                                 'ffd', 'conv4', 'conv8', 'conv12'])
     parser.add_argument('--clustering', type=str, default=None,
                         choices=['deepEmbedded', 'deepClustering',
                                  'CTCClustering'])
@@ -51,5 +52,6 @@ def set_default_cpc_config(parser):
     parser.add_argument('--cluster_iter', type=int, default=100)
     parser.add_argument('--clustering_update', type=str, default='kmean',
                         choices=['kmean', 'dpmean'])
+    parser.add_argument('--schedulerRamp', type=int, default=None)
 
     return parser

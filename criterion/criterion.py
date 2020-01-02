@@ -1,6 +1,40 @@
 import torch
 import torch.nn as nn
 from .seq_alignment import collapseLabelChain
+from .custom_layers import EqualizedLinear, EqualizedConv1d
+
+
+class FFNetwork(nn.Module):
+    def __init__(self, din, dout, dff, dropout):
+        super(FFNetwork, self).__init__()
+        self.lin1 = EqualizedLinear(din, dff, bias=True, equalized=True)
+        self.lin2 = EqualizedLinear(dff, dout, bias=True, equalized=True)
+        self.relu = nn.ReLU()
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x):
+        return self.lin2(self.drop(self.relu(self.lin1(x))))
+
+
+class ShiftedConv(nn.Module):
+    def __init__(self, dimOutputAR, dimOutputEncoder, kernelSize):
+        super(ShiftedConv, self).__init__()
+        self.module = EqualizedConv1d(dimOutputAR, dimOutputEncoder,
+                                      kernelSize, equalized=True,
+                                      padding=0)
+        self.kernelSize = kernelSize
+
+    def forward(self, x):
+
+        # Input format: N, S, C -> need to move to N, C, S
+        N, S, C = x.size()
+        x = x.permute(0, 2, 1)
+
+        padding = torch.zeros(N, C, self.kernelSize - 1, device=x.device)
+        x = torch.cat([padding, x], dim=2)
+        x = self.module(x)
+        x = x.permute(0, 2, 1)
+        return x
 
 
 class PredictionNetwork(nn.Module):
@@ -28,6 +62,19 @@ class PredictionNetwork(nn.Module):
                 self.predictors.append(
                     nn.LSTM(dimOutputAR, dimOutputEncoder, batch_first=True))
                 self.predictors[-1].flatten_parameters()
+            elif rnnMode == 'ffd':
+                self.predictors.append(
+                    FFNetwork(dimOutputAR, dimOutputEncoder,
+                              dimOutputEncoder, 0))
+            elif rnnMode == 'conv4':
+                self.predictors.append(
+                    ShiftedConv(dimOutputAR, dimOutputEncoder, 4))
+            elif rnnMode == 'conv8':
+                self.predictors.append(
+                    ShiftedConv(dimOutputAR, dimOutputEncoder, 8))
+            elif rnnMode == 'conv12':
+                self.predictors.append(
+                    ShiftedConv(dimOutputAR, dimOutputEncoder, 12))
             elif rnnMode == 'transformer':
                 from transformers import buildTransformerAR
                 self.predictors.append(
@@ -47,11 +94,18 @@ class PredictionNetwork(nn.Module):
 
         assert(len(candidates) == len(self.predictors))
         out = []
+
+        # UGLY
+        if isinstance(self.predictors[0], EqualizedConv1d):
+            c = c.permute(0, 2, 1)
+
         for k in range(len(self.predictors)):
 
             locC = self.predictors[k](c)
             if isinstance(locC, tuple):
                 locC = locC[0]
+            if isinstance(self.predictors[k], EqualizedConv1d):
+                locC = locC.permute(0, 2, 1)
             if self.dropout is not None:
                 locC = self.dropout(locC)
             locC = locC.view(locC.size(0), 1, locC.size(1), locC.size(2))
@@ -127,11 +181,14 @@ class CPCUnsupersivedCriterion(BaseCriterion):
 
         seqIdx = torch.randint(low=1, high=nNegativeExt,
                                size=(self.negativeSamplingExt
-                                     * windowSize * batchSize, ), device=encodedData.device)
+                                     * windowSize * batchSize, ),
+                               device=encodedData.device)
 
         baseIdx = torch.arange(0, windowSize, device=encodedData.device)
-        baseIdx = baseIdx.view(1, 1, windowSize).expand(1,
-                                                        self.negativeSamplingExt, windowSize).expand(batchSize, self.negativeSamplingExt, windowSize)
+        baseIdx = baseIdx.view(1, 1,
+                               windowSize).expand(1,
+                                                  self.negativeSamplingExt,
+                                                  windowSize).expand(batchSize, self.negativeSamplingExt, windowSize)
         seqIdx += baseIdx.contiguous().view(-1)
         seqIdx = torch.remainder(seqIdx, nNegativeExt)
 
