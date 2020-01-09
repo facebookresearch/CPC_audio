@@ -9,6 +9,9 @@ The installation is a tiny bit involved due to the torch-audio dependency.
 
 2/ `conda env create -f setup/environment.yml && conda activate cpc37`
 
+3/ Go to the root directory and run setup.py
+`pip install -e .`
+
 # CUDA driver
 
 This setup is given for CUDA 9.2 if you use a different version of CUDA then please change the version of cudatoolkit in environment.yml.

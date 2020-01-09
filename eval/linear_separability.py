@@ -16,6 +16,7 @@ from dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels
 def get_supervised_criterion(args, downsampling, nSpeakers, nPhones):
     dimFeatures = args.hiddenGar if not args.onEncoder else args.hiddenEncoder
     if args.pathPhone is not None:
+        print("Running phone separability")
         if not args.CTC:
             supervised_criterion = cr.PhoneCriterion(dimFeatures,
                                                      nPhones, args.onEncoder,
@@ -25,6 +26,7 @@ def get_supervised_criterion(args, downsampling, nSpeakers, nPhones):
                                                         nPhones,
                                                         args.onEncoder)
     else:
+        print("Running speaker separability")
         supervised_criterion = cr.SpeakerCriterion(dimFeatures, nSpeakers)
 
     return supervised_criterion
@@ -142,6 +144,8 @@ def parse_args(argv):
     parser.add_argument('--pathPhone', type=str, default=None,
                         help="Path to the phone labels. If given, will"
                         " compute the phone separability.")
+    parser.add_argument('--CTC', action='store_true',
+                        help="Use the CTC loss (for phone separability only)")
     parser.add_argument('--pathCheckpoint', type=str, default='out',
                         help="Path of the output directory where the "
                         " checkpoints should be dumped.")
@@ -178,6 +182,9 @@ def parse_args(argv):
     if args.save_step <= 0:
         args.save_step = args.n_epoch
 
+    args.load = [ str(Path(x).resolve()) for x in args.load]
+    args.pathCheckpoint = str(Path(args.pathCheckpoint).resolve())
+
     return args
 
 
@@ -191,7 +198,8 @@ def main(argv):
                                      extension=args.file_extension,
                                      loadCache=not args.ignore_cache)
 
-    model, hidden_gar, hidden_encoder = fl.loadModel(args.load)
+    model, hidden_gar, hidden_encoder = fl.loadModel(args.load,
+                                                     loadStateDict=not args.no_pretraining)
     model.cuda()
     model = torch.nn.DataParallel(model, device_ids=range(args.nGPU))
 
@@ -241,9 +249,11 @@ def main(argv):
     model.optimize = False
     model.eval()
     if not args.unfrozen:
+        print("Working in full fine-tune mode")
         g_params += list(model.parameters())
         model.optimize = True
     else:
+        print("Working with frozen features")
         for g in model.parameters():
             g.requires_grad = False
 
