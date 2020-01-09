@@ -227,6 +227,25 @@ def loadModel(pathCheckpoints, loadStateDict=True):
     return ConcatenatedModel(models), hiddenGar, hiddenEncoder
 
 
+def get_module(i_module):
+    if isinstance(i_module, torch.nn.DataParallel):
+        return get_module(i_module.module)
+    if isinstance(i_module, FeatureModule):
+        return get_module(i_module.module)
+    return i_module
+
+
+def save_checkpoint(model_state, criterion_state, optimizer_state, best_state,
+                    path_checkpoint):
+
+    state_dict = {"gEncoder": model_state,
+                 "cpcCriterion": criterion_state,
+                 "optimizer": optimizer_state,
+                 "best": best_state}
+
+    torch.save(state_dict, path_checkpoint)
+
+
 def toOneHot(inputVector, nItems):
 
     batchSize, seqSize = inputVector.size()

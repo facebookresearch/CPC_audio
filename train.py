@@ -12,6 +12,7 @@ import sys
 import criterion as cr
 import model
 import feature_loader as fl
+import utils.misc as utils
 from cpc_default_config import set_default_cpc_config
 from dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels
 from criterion.research import CPCBertCriterion, DeepEmbeddedClustering, \
@@ -47,45 +48,6 @@ def set_seed(seed):
     np.random.seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-
-
-def updateLogs(logs, logStep, prevlogs=None):
-    out = {}
-    for key in logs:
-        out[key] = deepcopy(logs[key])
-
-        if prevlogs is not None:
-            out[key] -= prevlogs[key]
-        out[key] /= logStep
-    return out
-
-
-def showLogs(text, logs):
-    print("")
-    print('-'*50)
-    print(text)
-
-    for key in logs:
-
-        if key == "iter":
-            continue
-
-        nPredicts = logs[key].shape[0]
-
-        strSteps = ['Step'] + [str(s) for s in range(1, nPredicts + 1)]
-        formatCommand = ' '.join(['{:>16}' for x in range(nPredicts + 1)])
-        print(formatCommand.format(*strSteps))
-
-        strLog = [key] + ["{:10.6f}".format(s) for s in logs[key]]
-        print(formatCommand.format(*strLog))
-
-    print('-'*50)
-
-
-def saveLogs(data, pathLogs):
-    with open(pathLogs, 'w') as file:
-        json.dump(data, file, indent=2)
-
 
 def cpuStats():
     print(sys.version)
@@ -218,14 +180,14 @@ def adversarialTrainStep(dataLoader, model,
             print(f"elapsed: {elapsed:.1f} s")
             print(
                 f"{1000.0 * elapsed / loggingStep:.1f} ms per batch, {1000.0 * elapsed / n_examples:.1f} ms / example")
-            locLogs = updateLogs(logs, loggingStep, lastlogs)
+            locLogs = utils.update_logs(logs, loggingStep, lastlogs)
             lastlogs = deepcopy(logs)
-            showLogs("Training loss", locLogs)
+            utils.show_logs("Training loss", locLogs)
             start_time, n_examples = new_time, 0
 
-    logs = updateLogs(logs, iter)
+    logs = utils.update_logs(logs, iter)
     logs["iter"] = iter
-    showLogs(f"Average training loss on epoch ({iter+1} updates) :", logs)
+    utils.show_logs(f"Average training loss on epoch ({iter+1} updates) :", logs)
     return logs
 
 
@@ -283,17 +245,17 @@ def trainStep(dataLoader,
             print(f"elapsed: {elapsed:.1f} s")
             print(
                 f"{1000.0 * elapsed / loggingStep:.1f} ms per batch, {1000.0 * elapsed / n_examples:.1f} ms / example")
-            locLogs = updateLogs(logs, loggingStep, lastlogs)
+            locLogs = utils.update_logs(logs, loggingStep, lastlogs)
             lastlogs = deepcopy(logs)
-            showLogs("Training loss", locLogs)
+            utils.show_logs("Training loss", locLogs)
             start_time, n_examples = new_time, 0
 
     if scheduler is not None:
         scheduler.step()
 
-    logs = updateLogs(logs, iter)
+    logs = utils.update_logs(logs, iter)
     logs["iter"] = iter
-    showLogs("Average training loss on epoch", logs)
+    utils.show_logs("Average training loss on epoch", logs)
     return logs
 
 
@@ -335,9 +297,9 @@ def valStep(dataLoader,
                                         ).detach().cpu().numpy()
         logs["locAcc_val"] += allAcc.mean(dim=0).cpu().numpy()
 
-    logs = updateLogs(logs, iter)
+    logs = utils.update_logs(logs, iter)
     logs["iter"] = iter
-    showLogs("Validation loss:", logs)
+    utils.show_logs("Validation loss:", logs)
     return logs
 
 
@@ -420,10 +382,7 @@ def run(trainDataset,
 
         currentAccuracy = float(locLogsVal["locAcc_val"].mean())
         if currentAccuracy > bestAcc:
-            try:
-                bestStateDict = cpcModel.module.state_dict()
-            except AttributeError:
-                bestStateDict = cpcModel.state_dict()
+            bestStateDict = fl.get_module(cpcModel).state_dict()
 
         for key, value in dict(locLogsTrain, **locLogsVal).items():
             if key not in logs:
@@ -436,21 +395,17 @@ def run(trainDataset,
 
         if pathCheckpoint is not None \
                 and (epoch % logs["saveStep"] == 0 or epoch == nEpoch-1):
-            try:
-                modelStateDict = cpcModel.module.state_dict()
-            except AttributeError:
-                modelStateDict = cpcModel.state_dict()
-            try:
-                criterionStateDict = cpcCriterion.module.state_dict()
-            except AttributeError:
-                criterionStateDict = cpcCriterion.state_dict()
+
+            modelStateDict = fl.get_module(cpcModel).state_dict()
+            criterionStateDict = fl.get_module(cpcCriterion).state_dict()
+
             stateDict = {"gEncoder": modelStateDict,
                          "cpcCriterion": criterionStateDict,
                          "optimizer": optimizer.state_dict(),
                          "best": bestStateDict}
 
             torch.save(stateDict, f"{pathCheckpoint}_{epoch}.pt")
-            saveLogs(logs, pathCheckpoint + "_logs.json")
+            utils.save_logs(logs, pathCheckpoint + "_logs.json")
 
 
 def main(args):

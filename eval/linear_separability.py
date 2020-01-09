@@ -1,0 +1,247 @@
+import argparse
+import sys
+import torch
+import json
+import time
+import numpy as np
+from pathlib import Path
+import os
+
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+import criterion as cr
+import feature_loader as fl
+import utils.misc as utils
+from dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels
+
+
+def get_supervised_criterion(args, downsampling, nSpeakers, nPhones):
+    dimFeatures = args.hiddenGar if not args.onEncoder else args.hiddenEncoder
+    if args.pathPhone is not None:
+        if not args.CTC:
+            supervised_criterion = cr.PhoneCriterion(dimFeatures,
+                                                     nPhones, args.onEncoder,
+                                                     nLayers=args.nLevelsPhone)
+        else:
+            supervised_criterion = cr.CTCPhoneCriterion(dimFeatures,
+                                                        nPhones,
+                                                        args.onEncoder)
+    else:
+        supervised_criterion = cr.SpeakerCriterion(dimFeatures, nSpeakers)
+
+    return supervised_criterion
+
+
+def train_step(feature_maker, criterion, data_loader, optimizer):
+
+    if feature_maker.optimize:
+        feature_maker.train()
+    criterion.train()
+
+    logs = {"locLoss_train":0,  "locAcc_train":0}
+
+    for step, fulldata in enumerate(data_loader):
+
+        optimizer.zero_grad()
+        batch_data, label = fulldata
+        c_feature, encoded_data, _ = feature_maker(batch_data, None)
+        allLosses, allAcc = criterion(c_feature, encoded_data, label)
+        totLoss = allLosses.sum()
+        totLoss.backward()
+        optimizer.step()
+
+        logs["locLoss_train"]+= np.asarray([allLosses.mean().item()])
+        logs["locAcc_train"]+= np.asarray([allAcc.mean().item()])
+
+    logs = utils.update_logs(logs, step)
+    logs["iter"] = step
+
+    return logs
+
+
+def val_step(feature_maker, criterion, data_loader):
+
+    feature_maker.eval()
+    criterion.eval()
+    logs = {"locLoss_val":0,  "locAcc_val": 0}
+
+    for step, fulldata in enumerate(data_loader):
+
+        with torch.no_grad():
+            batch_data, label = fulldata
+            c_feature, encoded_data, _ = feature_maker(batch_data, None)
+            allLosses, allAcc = criterion(c_feature, encoded_data, label)
+
+            logs["locLoss_val"]+= np.asarray([allLosses.mean().item()])
+            logs["locAcc_val"]+= np.asarray([allAcc.mean().item()])
+
+    logs = utils.update_logs(logs, step)
+
+    return logs
+
+
+def run(feature_maker,
+        criterion,
+        train_loader,
+        val_loader,
+        optimizer,
+        logs,
+        n_epochs,
+        path_checkpoint):
+
+    start_epoch = len(logs["epoch"])
+    best_acc = -1
+
+    start_time = time.time()
+
+    for epoch in range(start_epoch, n_epochs):
+
+        logs_train = train_step(feature_maker, criterion, train_loader,
+                                optimizer)
+        logs_val = val_step(feature_maker, criterion, val_loader)
+        print('')
+        print('_'*50)
+        print(f'Ran {epoch + 1} epochs '
+              f'in {time.time() - start_time:.2f} seconds')
+        utils.show_logs("Training loss", logs_train)
+        utils.show_logs("Validation loss", logs_val)
+        print('_'*50)
+        print('')
+
+        if logs_val["locAcc_val"] > best_acc:
+            best_state = fl.get_module(feature_maker).state_dict()
+            best_acc = logs_val["locAcc_val"]
+
+        logs["epoch"].append(epoch)
+        for key, value in dict(logs_train, **logs_val).items():
+            if key not in logs:
+                logs[key] = [None for x in range(epoch)]
+            if isinstance(value, np.ndarray):
+                value = value.tolist()
+            logs[key].append(value)
+
+        if (epoch % logs["saveStep"] == 0 and epoch > 0) or epoch == n_epochs - 1:
+            model_state_dict = fl.get_module(feature_maker).state_dict()
+            criterion_state_dict = fl.get_module(criterion).state_dict()
+
+            fl.save_checkpoint(model_state_dict, criterion_state_dict,
+                               optimizer.state_dict(), best_state,
+                               f"{path_checkpoint}_{epoch}.pt")
+            utils.save_logs(logs, f"{path_checkpoint}_logs.json")
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description='Linear separability trainer')
+    parser.add_argument('pathDB', type=str)
+    parser.add_argument('pathTrain', type=str, default=None)
+    parser.add_argument('pathVal', type=str, default=None)
+    parser.add_argument('load', type=str, default=None, nargs='*')
+    parser.add_argument('--pathPhone', type=str, default=None)
+    parser.add_argument('--pathCheckpoint', type=str, default='out')
+    parser.add_argument('--output', type=str, default=None)
+    parser.add_argument('--nGPU', type=int, default=-1)
+    parser.add_argument('--batchSizeGPU', type=int, default=8)
+    parser.add_argument('--n_epoch', type=int, default=10)
+    parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--unfrozen', action='store_true')
+    parser.add_argument('--file_extension', type=str, default=".flac")
+    parser.add_argument('--save_step', type=int, default=-1)
+    parser.add_argument('--get_encoded', action='store_true')
+    parser.add_argument('--lr', type=float, default=2e-4)
+    parser.add_argument('--beta1', type=float, default=0.9)
+    parser.add_argument('--beta2', type=float, default=0.999)
+    parser.add_argument('--epsilon', type=float, default=2e-8)
+    parser.add_argument('--ignore_cache', action='store_true')
+    parser.add_argument('--size_window', type=int, default=20480)
+    args = parser.parse_args(argv)
+    if args.nGPU < 0:
+        args.nGPU = torch.cuda.device_count()
+    if args.save_step <= 0:
+        args.save_step = args.n_epoch
+
+    return args
+
+def main(argv):
+
+    args = parse_args(argv)
+    logs = {"epoch": [], "iter": [], "saveStep": args.save_step}
+    load_criterion = False
+
+    seqNames, speakers = findAllSeqs(args.pathDB,
+                                     extension=args.file_extension,
+                                     loadCache=not args.ignore_cache)
+
+    model, hidden_gar, hidden_encoder = fl.loadModel(args.load)
+    model.cuda()
+    model = torch.nn.DataParallel(model, device_ids=range(args.nGPU))
+
+    dim_features = hidden_encoder if args.get_encoded else hidden_gar
+
+    # Now the criterion
+    phone_labels = None
+    if args.pathPhone is not None:
+        phone_labels, n_phones = parseSeqLabels(args.pathPhone)
+        if not args.CTC:
+            print(f"Running phone separability with aligned phones")
+            criterion = cr.PhoneCriterion(dim_features,
+                                          n_phones, args.get_encoded)
+        else:
+            print(f"Running phone separability with CTC loss")
+            criterion = cr.CTCPhoneCriterion(dimFeatures,
+                                             n_phones, args.get_encoded)
+    else:
+        print(f"Running speaker separability")
+        criterion = cr.SpeakerCriterion(dim_features, len(speakers))
+    criterion.cuda()
+    criterion = torch.nn.DataParallel(criterion, device_ids=range(args.nGPU))
+
+    # Dataset
+    seq_train = filterSeqs(args.pathTrain, seqNames)
+    seq_val = filterSeqs(args.pathVal, seqNames)
+
+    if args.debug:
+        seq_train = seq_train[:1000]
+        seq_val = seq_val[:100]
+
+    db_train = AudioBatchData(args.pathDB, args.size_window, seq_train,
+                              phone_labels, len(speakers))
+    db_val = AudioBatchData(args.pathDB, args.size_window, seq_val,
+                            phone_labels, len(speakers))
+
+    batch_size = args.batchSizeGPU * args.nGPU
+
+    train_loader = db_train.getDataLoader(batch_size, "uniform", True,
+                                          numWorkers=0)
+
+    val_loader = db_val.getDataLoader(batch_size, 'sequential', False,
+                                      numWorkers=0)
+
+    #Optimizer
+    g_params = list(criterion.parameters())
+    model.optimize = False
+    model.eval()
+    if not args.unfrozen:
+        g_params += list(model.parameters())
+        model.optimize = True
+    else:
+        for g in model.parameters():
+            g.requires_grad = False
+
+    optimizer = torch.optim.Adam(g_params, lr=args.lr,
+                                 betas=(args.beta1, args.beta2),
+                                 eps=args.epsilon)
+
+    #Checkpoint directory
+    args.pathCheckpoint = Path(args.pathCheckpoint)
+    args.pathCheckpoint.mkdir(exist_ok=True)
+    args.pathCheckpoint = str(args.pathCheckpoint / "checkpoint")
+
+    with open(f"{args.pathCheckpoint}_args.json", 'w') as file:
+        json.dump(vars(args), file, indent=2)
+
+    run(model, criterion, train_loader, val_loader, optimizer, logs,
+        args.n_epoch, args.pathCheckpoint)
+
+if __name__ == "__main__":
+    torch.multiprocessing.set_start_method('spawn')
+    args = sys.argv[1:]
+    main(args)
