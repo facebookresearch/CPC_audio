@@ -199,8 +199,7 @@ def trainStep(dataLoader,
               clustering,
               loggingStep):
 
-    if cpcModel.module.optimize:
-        cpcModel.train()
+    cpcModel.train()
     cpcCriterion.train()
 
     start_time = time.perf_counter()
@@ -399,12 +398,9 @@ def run(trainDataset,
             modelStateDict = fl.get_module(cpcModel).state_dict()
             criterionStateDict = fl.get_module(cpcCriterion).state_dict()
 
-            stateDict = {"gEncoder": modelStateDict,
-                         "cpcCriterion": criterionStateDict,
-                         "optimizer": optimizer.state_dict(),
-                         "best": bestStateDict}
-
-            torch.save(stateDict, f"{pathCheckpoint}_{epoch}.pt")
+            fl.save_checkpoint(modelStateDict, criterionStateDict,
+                               optimizer.state_dict(), bestStateDict,
+                               f"{path_checkpoint}_{epoch}.pt")
             utils.save_logs(logs, pathCheckpoint + "_logs.json")
 
 
@@ -536,20 +532,8 @@ def main(args):
     cpcCriterion.cuda()
     cpcModel.cuda()
 
-    cpcModel.optimize = True
-    if args.eval:
-        print("Evaluation mode")
-        cpcModel.optimize = False
-        cpcModel.eval()
-        for g in cpcModel.parameters():
-            g.requires_grad = False
-
     # Optimizer
-    g_params = list(cpcCriterion.parameters())
-
-    if not args.eval:
-        print("Optimizing model")
-        g_params += list(cpcModel.parameters())
+    g_params = list(cpcCriterion.parameters()) + list(cpcModel.parameters())
 
     clustering = None
     if args.clustering is not None:
@@ -660,7 +644,6 @@ def parseArgs(argv):
     parser.add_argument('--pathVal', type=str, default=None)
     parser.add_argument('--pathPhone', type=str, default=None)
     parser.add_argument('--supervised', action='store_true')
-    parser.add_argument('--eval', action='store_true')
     parser.add_argument('--load', type=str, default=None, nargs='*')
     parser.add_argument('--loadCriterion', action='store_true')
     parser.add_argument('--pathCheckpoint', type=str, default=None,
