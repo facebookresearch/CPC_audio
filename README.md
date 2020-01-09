@@ -25,10 +25,14 @@ python train.py --pathDB $PATH_TO_LIBRISPEECH_DB --pathCheckpoint $PATH_CHECKPOI
 
 ## How to run an evaluation session
 
+All evaluation scripts are available in eval/.
+
+### Linear separability:
+
 Speaker separability:
 
 ```bash
-python train.py --pathDB $PATH_TO_LIBRISPEECH_DB --pathCheckpoint $PATH_CHECKPOINT --supervised --eval --load $CHECKPOINT_TO_LOAD --pathTrain $TRAINING_SET --pathVal $VAL_SET
+python eval/linear_separability.py --pathDB $PATH_TO_LIBRISPEECH_DB --pathCheckpoint $PATH_CHECKPOINT --supervised --eval --load $CHECKPOINT_TO_LOAD --pathTrain $TRAINING_SET --pathVal $VAL_SET
 ```
 
 Phone separability:
@@ -45,15 +49,28 @@ python train.py --pathDB $PATH_TO_LIBRISPEECH_DB --supervised --eval --load mode
 Will evaluate the speaker separability of the concatenation of model1 and model2.
 
 
+### ABX score:
+
+You can run the ABX score on the [Zerospeech2017 dataset](https://zerospeech.com/2017/index.html). To begin, download the dataset [here](https://download.zerospeech.com/). Then run the ABX evaluation on a given checkpoint with:
+
+```bash
+python ABX.py from_checkpoint $PATH_CHECKPOINT $PATH_ITEM_FILE $DATASET_PATH --seq_norm --strict --file_extension .wav --out $PATH_OUT
+```
+Where:
+- $PATH_CHECKPOINT is the path pointing to the checkpoint to evaluate
+- $PATH_ITEM_FILE is the path to the .item file containing the triplet annotations
+- $DATASET_PATH path to the directory containing the audio files
+- $PATH_OUT path to the directory into which the results should be dumped
+
 ## Runnning a grid-search over hyper-parameters (FAIR only)
 
-Requires submitit, see [setup guide](setup/setup.MD). Preemption is not yet supported, hence it is advised to use either `dev` or `priority` partitions.
+Requires submitit, see [setup guide](setup/setup.MD). Premption is not yet supported, hence it is advised to use either `dev` or `priority` partitions.
 
 Running a grid-search is as simple as
 ```json
 python grid_search.py --sweep=./utils/small_grid.json --name=test --partition=dev
 ```
-where `/utils/small_grid.json` is a json file defining grid (as in [example](utils/small_grid.json)), `name` is the experiment name. 
+where `/utils/small_grid.json` is a json file defining grid (as in [example](utils/small_grid.json)), `name` is the experiment name.
 The resulting models and stdout/stderr streams of the runs would appear in `~/cpc/<name>/<data-time>/`.
 
 You can use the `--dry_run` parameter which prevents the jobs from being actually launched.
@@ -110,4 +127,3 @@ patch -p1 < ~/CPC_torch/util/zerospeech.patch
 ```
 python  build_zeroSpeech_features.py /private/home/kharitonov/zerospeech2017/data/test/english/10s/ ./features_out/  ./checkpoints/checkpoint_145.pt  --recursionLevel=0 --format=npz
 ```
-
