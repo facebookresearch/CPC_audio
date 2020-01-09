@@ -13,25 +13,6 @@ import utils.misc as utils
 from dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels
 
 
-def get_supervised_criterion(args, downsampling, nSpeakers, nPhones):
-    dimFeatures = args.hiddenGar if not args.onEncoder else args.hiddenEncoder
-    if args.pathPhone is not None:
-        print("Running phone separability")
-        if not args.CTC:
-            supervised_criterion = cr.PhoneCriterion(dimFeatures,
-                                                     nPhones, args.onEncoder,
-                                                     nLayers=args.nLevelsPhone)
-        else:
-            supervised_criterion = cr.CTCPhoneCriterion(dimFeatures,
-                                                        nPhones,
-                                                        args.onEncoder)
-    else:
-        print("Running speaker separability")
-        supervised_criterion = cr.SpeakerCriterion(dimFeatures, nSpeakers)
-
-    return supervised_criterion
-
-
 def train_step(feature_maker, criterion, data_loader, optimizer):
 
     if feature_maker.optimize:
@@ -182,7 +163,7 @@ def parse_args(argv):
     if args.save_step <= 0:
         args.save_step = args.n_epoch
 
-    args.load = [ str(Path(x).resolve()) for x in args.load]
+    args.load = [str(Path(x).resolve()) for x in args.load]
     args.pathCheckpoint = str(Path(args.pathCheckpoint).resolve())
 
     return args
@@ -215,7 +196,7 @@ def main(argv):
                                           n_phones, args.get_encoded)
         else:
             print(f"Running phone separability with CTC loss")
-            criterion = cr.CTCPhoneCriterion(dimFeatures,
+            criterion = cr.CTCPhoneCriterion(dim_features,
                                              n_phones, args.get_encoded)
     else:
         print(f"Running speaker separability")
