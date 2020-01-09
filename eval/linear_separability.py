@@ -7,7 +7,6 @@ import numpy as np
 from pathlib import Path
 import os
 
-sys.path.append(str(Path(__file__).resolve().parent.parent))
 import criterion as cr
 import feature_loader as fl
 import utils.misc as utils
@@ -130,28 +129,49 @@ def run(feature_maker,
 
 
 def parse_args(argv):
-    parser = argparse.ArgumentParser(description='Linear separability trainer')
-    parser.add_argument('pathDB', type=str)
-    parser.add_argument('pathTrain', type=str, default=None)
-    parser.add_argument('pathVal', type=str, default=None)
-    parser.add_argument('load', type=str, default=None, nargs='*')
-    parser.add_argument('--pathPhone', type=str, default=None)
-    parser.add_argument('--pathCheckpoint', type=str, default='out')
-    parser.add_argument('--output', type=str, default=None)
+    parser = argparse.ArgumentParser(description='Linear separability trainer'
+                                     ' (default test in speaker separability)')
+    parser.add_argument('pathDB', type=str,
+                        help="Path to the data.")
+    parser.add_argument('pathTrain', type=str,
+                        help="Path to the list of the training sequences.")
+    parser.add_argument('pathVal', type=str,
+                        help="Path to the list of the test sequences.")
+    parser.add_argument('load', type=str, nargs='*',
+                        help="Path to the checkpoint to evaluate.")
+    parser.add_argument('--pathPhone', type=str, default=None,
+                        help="Path to the phone labels. If given, will"
+                        " compute the phone separability.")
+    parser.add_argument('--pathCheckpoint', type=str, default='out',
+                        help="Path of the output directory where the "
+                        " checkpoints should be dumped.")
     parser.add_argument('--nGPU', type=int, default=-1)
     parser.add_argument('--batchSizeGPU', type=int, default=8)
     parser.add_argument('--n_epoch', type=int, default=10)
     parser.add_argument('--debug', action='store_true')
-    parser.add_argument('--unfrozen', action='store_true')
-    parser.add_argument('--file_extension', type=str, default=".flac")
-    parser.add_argument('--save_step', type=int, default=-1)
-    parser.add_argument('--get_encoded', action='store_true')
+    parser.add_argument('--unfrozen', action='store_true',
+                        help="If activated, update the feature network as well"
+                        " as the linear classifier")
+    parser.add_argument('--no_pretraining', action='store_true',
+                        help="If activated, work from an untrained model.")
+    parser.add_argument('--file_extension', type=str, default=".flac",
+                        help="Extension of the audio files in pathDB.")
+    parser.add_argument('--save_step', type=int, default=-1,
+                        help="Frequency at which a checkpoint should be saved,"
+                        " et to -1 (default) to save only the best checkpoint.")
+    parser.add_argument('--get_encoded', action='store_true',
+                        help="If activated, will work with the output of the "
+                        " convolutional encoder (see CPC's architecture).")
     parser.add_argument('--lr', type=float, default=2e-4)
     parser.add_argument('--beta1', type=float, default=0.9)
     parser.add_argument('--beta2', type=float, default=0.999)
     parser.add_argument('--epsilon', type=float, default=2e-8)
-    parser.add_argument('--ignore_cache', action='store_true')
-    parser.add_argument('--size_window', type=int, default=20480)
+    parser.add_argument('--ignore_cache', action='store_true',
+                        help="Activate if the sequences in pathDB have"
+                        " changed.")
+    parser.add_argument('--size_window', type=int, default=20480,
+                        help="Number of frame to give to the feature make at"
+                        " the same time.")
     args = parser.parse_args(argv)
     if args.nGPU < 0:
         args.nGPU = torch.cuda.device_count()
