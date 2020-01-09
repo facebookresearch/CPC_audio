@@ -36,7 +36,7 @@ def train_step(feature_maker, criterion, data_loader, optimizer):
         feature_maker.train()
     criterion.train()
 
-    logs = {"locLoss_train":0,  "locAcc_train":0}
+    logs = {"locLoss_train": 0,  "locAcc_train": 0}
 
     for step, fulldata in enumerate(data_loader):
 
@@ -48,8 +48,8 @@ def train_step(feature_maker, criterion, data_loader, optimizer):
         totLoss.backward()
         optimizer.step()
 
-        logs["locLoss_train"]+= np.asarray([allLosses.mean().item()])
-        logs["locAcc_train"]+= np.asarray([allAcc.mean().item()])
+        logs["locLoss_train"] += np.asarray([allLosses.mean().item()])
+        logs["locAcc_train"] += np.asarray([allAcc.mean().item()])
 
     logs = utils.update_logs(logs, step)
     logs["iter"] = step
@@ -61,7 +61,7 @@ def val_step(feature_maker, criterion, data_loader):
 
     feature_maker.eval()
     criterion.eval()
-    logs = {"locLoss_val":0,  "locAcc_val": 0}
+    logs = {"locLoss_val": 0,  "locAcc_val": 0}
 
     for step, fulldata in enumerate(data_loader):
 
@@ -70,8 +70,8 @@ def val_step(feature_maker, criterion, data_loader):
             c_feature, encoded_data, _ = feature_maker(batch_data, None)
             allLosses, allAcc = criterion(c_feature, encoded_data, label)
 
-            logs["locLoss_val"]+= np.asarray([allLosses.mean().item()])
-            logs["locAcc_val"]+= np.asarray([allAcc.mean().item()])
+            logs["locLoss_val"] += np.asarray([allLosses.mean().item()])
+            logs["locAcc_val"] += np.asarray([allAcc.mean().item()])
 
     logs = utils.update_logs(logs, step)
 
@@ -132,7 +132,7 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(description='Linear separability trainer'
                                      ' (default test in speaker separability)')
     parser.add_argument('pathDB', type=str,
-                        help="Path to the data.")
+                        help="Path to the directory containing the audio data.")
     parser.add_argument('pathTrain', type=str,
                         help="Path to the list of the training sequences.")
     parser.add_argument('pathVal', type=str,
@@ -179,6 +179,7 @@ def parse_args(argv):
         args.save_step = args.n_epoch
 
     return args
+
 
 def main(argv):
 
@@ -235,7 +236,7 @@ def main(argv):
     val_loader = db_val.getDataLoader(batch_size, 'sequential', False,
                                       numWorkers=0)
 
-    #Optimizer
+    # Optimizer
     g_params = list(criterion.parameters())
     model.optimize = False
     model.eval()
@@ -250,7 +251,7 @@ def main(argv):
                                  betas=(args.beta1, args.beta2),
                                  eps=args.epsilon)
 
-    #Checkpoint directory
+    # Checkpoint directory
     args.pathCheckpoint = Path(args.pathCheckpoint)
     args.pathCheckpoint.mkdir(exist_ok=True)
     args.pathCheckpoint = str(args.pathCheckpoint / "checkpoint")
@@ -260,6 +261,7 @@ def main(argv):
 
     run(model, criterion, train_loader, val_loader, optimizer, logs,
         args.n_epoch, args.pathCheckpoint)
+
 
 if __name__ == "__main__":
     torch.multiprocessing.set_start_method('spawn')
