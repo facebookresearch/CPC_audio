@@ -13,8 +13,6 @@ import progressbar
 from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 from torch.multiprocessing import Pool
-
-sys.path.append('..')
 from criterion.seq_alignment import get_seq_PER
 from criterion.seq_alignment import beam_search
 from feature_loader import loadModel
