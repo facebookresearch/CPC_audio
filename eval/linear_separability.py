@@ -51,7 +51,7 @@ def val_step(feature_maker, criterion, data_loader):
         with torch.no_grad():
             batch_data, label = fulldata
             c_feature, encoded_data, _ = feature_maker(batch_data, None)
-            allLosses, allAcc = criterion(c_feature, encoded_data, label)
+            all_losses, all_acc = criterion(c_feature, encoded_data, label)
 
             logs["locLoss_val"] += np.asarray([allLosses.mean().item()])
             logs["locAcc_val"] += np.asarray([allAcc.mean().item()])
