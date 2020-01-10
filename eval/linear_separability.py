@@ -5,6 +5,7 @@ import json
 import time
 import numpy as np
 from pathlib import Path
+from copy import deepcopy
 import os
 
 import criterion as cr
@@ -26,13 +27,13 @@ def train_step(feature_maker, criterion, data_loader, optimizer):
         optimizer.zero_grad()
         batch_data, label = fulldata
         c_feature, encoded_data, _ = feature_maker(batch_data, None)
-        allLosses, allAcc = criterion(c_feature, encoded_data, label)
-        totLoss = allLosses.sum()
+        all_losses, all_acc = criterion(c_feature, encoded_data, label)
+        totLoss = all_losses.sum()
         totLoss.backward()
         optimizer.step()
 
-        logs["locLoss_train"] += np.asarray([allLosses.mean().item()])
-        logs["locAcc_train"] += np.asarray([allAcc.mean().item()])
+        logs["locLoss_train"] += np.asarray([all_losses.mean().item()])
+        logs["locAcc_train"] += np.asarray([all_acc.mean().item()])
 
     logs = utils.update_logs(logs, step)
     logs["iter"] = step
@@ -90,7 +91,7 @@ def run(feature_maker,
         print('')
 
         if logs_val["locAcc_val"] > best_acc:
-            best_state = fl.get_module(feature_maker).state_dict()
+            best_state = deepcopy(fl.get_module(feature_maker).state_dict())
             best_acc = logs_val["locAcc_val"]
 
         logs["epoch"].append(epoch)
