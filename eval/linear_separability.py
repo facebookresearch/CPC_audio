@@ -53,7 +53,7 @@ def val_step(feature_maker, criterion, data_loader):
             c_feature, encoded_data, _ = feature_maker(batch_data, None)
             all_losses, all_acc = criterion(c_feature, encoded_data, label)
 
-            logs["locLoss_val"] += np.asarray([allLosses.mean().item()])
+            logs["locLoss_val"] += np.asarray([all_losses.mean().item()])
             logs["locAcc_val"] += np.asarray([allAcc.mean().item()])
 
     logs = utils.update_logs(logs, step)
