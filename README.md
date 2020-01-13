@@ -21,7 +21,7 @@ The installation is a tiny bit involved due to the torch-audio dependency.
 This setup is given for CUDA 9.2 if you use a different version of CUDA then please change the version of cudatoolkit in environment.yml.
 For more information on the cudatoolkit version to use, please check https://pytorch.org/
 
-### (FAIR only) Slurm-based grid search
+## (FAIR only) Slurm-based grid search
 
 This feature requires submitit, which can be installed by running:
 `pip install git+ssh://git@github.com/fairinternal/submitit@master#egg=submitit`
@@ -49,14 +49,14 @@ python train.py --pathDB $PATH_TO_LIBRISPEECH_DB --pathCheckpoint $PATH_CHECKPOI
 
 ## How to run an evaluation session
 
-All evaluation scripts are available in eval/.
+All evaluation scripts are available in cpc/eval/.
 
 ### Linear separability:
 
 Speaker separability:
 
 ```bash
-python eval/linear_separability.py --pathDB $PATH_TO_LIBRISPEECH_DB --pathCheckpoint $PATH_CHECKPOINT --supervised --eval --load $CHECKPOINT_TO_LOAD --pathTrain $TRAINING_SET --pathVal $VAL_SET
+python cpc/eval/linear_separability.py --pathDB $PATH_TO_LIBRISPEECH_DB --pathCheckpoint $PATH_CHECKPOINT --supervised --eval --load $CHECKPOINT_TO_LOAD --pathTrain $TRAINING_SET --pathVal $VAL_SET
 ```
 
 Phone separability:
@@ -137,17 +137,3 @@ Librispeech500 (noisy):
 --pathTrain /private/home/mriviere/libriSpeech500/LibriSpeech/split_trainSeqs.txt
 
 --pathVal /private/home/mriviere/libriSpeech500/LibriSpeech/split_valSeqs.txt
-
-
-## Faster ABX calculation
-
-To speed up a bit the ABX evaluation loop, two things must be done:
- * patch the zerospeech script so that it reads npz files (one line has to be changed)
-```
-cd ~/zerospeech/
-patch -p1 < ~/CPC_torch/util/zerospeech.patch
-```
- * run `build_zeroSpeech_features.py` with the `--format=npz` key, e.g.:
-```
-python  build_zeroSpeech_features.py /private/home/kharitonov/zerospeech2017/data/test/english/10s/ ./features_out/  ./checkpoints/checkpoint_145.pt  --recursionLevel=0 --format=npz
-```

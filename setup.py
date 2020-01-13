@@ -1,6 +1,13 @@
-from setuptools import setup
-from setuptools import find_packages
-from pathlib import Path
+from setuptools import setup, find_packages
+from setuptools.extension import Extension
+from Cython.Build import cythonize
+
+extensions = [
+    Extension(
+        "cpc.eval.ABX.dtw",
+        ["cpc/eval/ABX/dtw.pyx"],
+    ),
+]
 
 setup(
    name='CPC_audio',
@@ -13,4 +20,5 @@ setup(
                  "Intended Audience :: Science/Research",
                  "Topic :: Scientific/Engineering",
                  "Programming Language :: Python"],
+    ext_modules = cythonize(extensions, language_level = "3")
 )

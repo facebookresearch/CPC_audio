@@ -45,7 +45,7 @@ class PCA(torch.nn.Module):
     def forward(self, x):
 
         reshape = False
-        if len(x.size() == 3):
+        if len(x.size()) == 3:
             b, s, _ = x.size()
             x = x.contiguous().view(b*s, -1)
             reshape = True

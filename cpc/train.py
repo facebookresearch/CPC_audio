@@ -9,15 +9,15 @@ import random
 import psutil
 import sys
 
-import criterion as cr
-import model
-import feature_loader as fl
+import cpc.criterion as cr
+import cpc.model as model
+import cpc.feature_loader as fl
 import utils.misc as utils
-from cpc_default_config import set_default_cpc_config
-from dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels
-from criterion.research import CPCBertCriterion, DeepEmbeddedClustering, \
+from cpc.cpc_default_config import set_default_cpc_config
+from cpc.dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels
+from cpc.criterion.research import CPCBertCriterion, DeepEmbeddedClustering, \
     DeepClustering, CTCCLustering
-from distributed_training.distributed_mode import init_distributed_mode
+from cpc.distributed_training.distributed_mode import init_distributed_mode
 
 
 def buildNewPhoneDict(pathDIR, seqNames, model, clusters, nk):

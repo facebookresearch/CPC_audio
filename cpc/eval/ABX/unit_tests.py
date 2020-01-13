@@ -3,6 +3,7 @@ import torch
 from nose.tools import eq_, ok_
 from . import abx_group_computation
 from . import abx_iterators
+from pathlib import Path
 import numpy as np
 import math
 
@@ -127,8 +128,12 @@ class testGroupMaker(unittest.TestCase):
 
 class testItemLoader(unittest.TestCase):
 
+    def setUp(self):
+        self.test_data_dir = Path(__file__).parent / 'test_data'
+
+
     def testLoadItemFile(self):
-        path_item_file = "test_data/dummy_item_file.item"
+        path_item_file = self.test_data_dir / "dummy_item_file.item"
         out, context_match, phone_match, speaker_match = \
             abx_iterators.load_item_file(path_item_file)
 
@@ -160,7 +165,7 @@ class testItemLoader(unittest.TestCase):
         eq_(expected_output, out)
 
     def testLoadWithinItemFile(self):
-        path_item_file = "test_data/dummy_item_within.item"
+        path_item_file = self.test_data_dir / "dummy_item_within.item"
         out, context_match, phone_match, speaker_match = \
             abx_iterators.load_item_file(path_item_file)
 
@@ -180,6 +185,7 @@ class testABXFeatureLoader(unittest.TestCase):
 
     def setUp(self):
         self.stepFeature = 10
+        self.test_data_dir = Path(__file__).parent / 'test_data'
 
     def dummy_feature_maker(path_file, *args):
         data = torch.tensor(np.load(path_file))
@@ -187,12 +193,12 @@ class testABXFeatureLoader(unittest.TestCase):
         return data.view(1, -1, 1)
 
     def testBaseLoader(self):
-        seqList = [('2107', 'test_data/2107.npy'),
-                   ('42', 'test_data/42.npy'),
-                   ('23', 'test_data/23.npy'),
-                   ('407', 'test_data/407.npy')]
+        seqList = [('2107', self.test_data_dir / '2107.npy'),
+                   ('42', self.test_data_dir / '42.npy'),
+                   ('23', self.test_data_dir / '23.npy'),
+                   ('407', self.test_data_dir / '407.npy')]
 
-        dataset = abx_iterators.ABXFeatureLoader("test_data/dummy_item_file.item",
+        dataset = abx_iterators.ABXFeatureLoader(self.test_data_dir / "dummy_item_file.item",
                                                  seqList,
                                                  testABXFeatureLoader.dummy_feature_maker,
                                                  self.stepFeature,
@@ -213,9 +219,9 @@ class testABXFeatureLoader(unittest.TestCase):
         eq_(data.tolist(), [[5]])
 
     def testWithinIterator(self):
-        seqList = [('2107', 'test_data/2107.npy'),
-                   ('42', 'test_data/42.npy')]
-        dataset = abx_iterators.ABXFeatureLoader("test_data/dummy_item_within.item",
+        seqList = [('2107', self.test_data_dir / '2107.npy'),
+                   ('42', self.test_data_dir / '42.npy')]
+        dataset = abx_iterators.ABXFeatureLoader(self.test_data_dir / "dummy_item_within.item",
                                                  seqList,
                                                  testABXFeatureLoader.dummy_feature_maker,
                                                  self.stepFeature,
