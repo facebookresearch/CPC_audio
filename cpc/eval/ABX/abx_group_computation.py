@@ -1,6 +1,6 @@
 import torch
 import math
-from .ABX import dtw
+from . import dtw
 import progressbar
 
 
