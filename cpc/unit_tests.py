@@ -1,12 +1,13 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 import unittest
 import torch
 import os
 from .dataset import AudioBatchData, findAllSeqs, filterSeqs
 from nose.tools import eq_, ok_
 from math import log
-# from phone_cluster_correlation import convertToProbaMatrix, getMutualInfo, \
-#                                       getEntropy, featureLabelToRepMat, \
-#                                       getSegsStats
 
 
 class TestDataLoader(unittest.TestCase):

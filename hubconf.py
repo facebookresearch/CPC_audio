@@ -1,3 +1,7 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 dependencies = ['torch']
 from feature_loader import getEncoder, getAR, loadArgs
 from cpc_default_config import get_default_cpc_config
