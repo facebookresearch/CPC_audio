@@ -1,15 +1,16 @@
 import os
 import json
-from dataset import findAllSeqs
-from clustering import kMeanCluster
-from feature_loader import buildFeature, FeatureModule, \
-    ModelPhoneCombined, loadSupervisedCriterion, \
-    ModelClusterCombined, loadModel
-from criterion.research.dim_reduction import loadDimReduction
 import torch
 import progressbar
 import argparse
 import numpy as np
+
+from cpc.dataset import findAllSeqs
+from cpc.criterion.research.clustering import kMeanCluster
+from cpc.feature_loader import buildFeature, FeatureModule, \
+    ModelPhoneCombined, loadSupervisedCriterion, \
+    ModelClusterCombined, loadModel
+from cpc.criterion.research.dim_reduction import loadDimReduction
 
 
 def getArgs(pathCheckpoints):

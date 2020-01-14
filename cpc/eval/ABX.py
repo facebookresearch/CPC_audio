@@ -2,11 +2,11 @@ import argparse
 import sys
 import torch
 import json
+from pathlib import Path
 import ABX.abx_group_computation as abx_g
 import ABX.abx_iterators as abx_it
-from dataset import findAllSeqs
-from feature_loader import buildFeature, FeatureModule, loadModel
-from pathlib import Path
+from cpc.dataset import findAllSeqs
+from cpc.feature_loader import buildFeature, FeatureModule, loadModel
 
 
 def reduce_sparse_data(quotient, divisor):

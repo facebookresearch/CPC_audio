@@ -8,10 +8,10 @@ from pathlib import Path
 from copy import deepcopy
 import os
 
-import criterion as cr
-import feature_loader as fl
-import utils.misc as utils
-from dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels
+import cpc.criterion as cr
+import cpc.feature_loader as fl
+import cpc.utils.misc as utils
+from cpc.dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels
 
 
 def train_step(feature_maker, criterion, data_loader, optimizer):

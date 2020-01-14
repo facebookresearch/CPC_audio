@@ -2,7 +2,7 @@ import pathlib
 import argparse
 import time
 
-from utils.grid_utils import SlurmWrapper, sweep
+from cpc.utils.grid_utils import SlurmWrapper, sweep
 
 
 if __name__ == '__main__':
