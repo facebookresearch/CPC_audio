@@ -13,10 +13,10 @@ import progressbar
 from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 from torch.multiprocessing import Pool
-from criterion.seq_alignment import get_seq_PER
-from criterion.seq_alignment import beam_search
-from feature_loader import loadModel
-from dataset import findAllSeqs, parseSeqLabels, filterSeqs
+from cpc.criterion.seq_alignment import get_seq_PER
+from cpc.criterion.seq_alignment import beam_search
+from cpc.feature_loader import loadModel
+from cpc.dataset import findAllSeqs, parseSeqLabels, filterSeqs
 
 
 def load(path_item):

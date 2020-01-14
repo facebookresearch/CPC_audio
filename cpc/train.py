@@ -11,7 +11,6 @@ import sys
 
 import cpc.criterion as cr
 import cpc.model as model
-import cpc.feature_loader as fl
 import cpc.utils.misc as utils
 from cpc.cpc_default_config import set_default_cpc_config
 from cpc.dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels
@@ -48,6 +47,7 @@ def set_seed(seed):
     np.random.seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
 
 def cpuStats():
     print(sys.version)
@@ -187,7 +187,8 @@ def adversarialTrainStep(dataLoader, model,
 
     logs = utils.update_logs(logs, iter)
     logs["iter"] = iter
-    utils.show_logs(f"Average training loss on epoch ({iter+1} updates) :", logs)
+    utils.show_logs(
+        f"Average training loss on epoch ({iter+1} updates) :", logs)
     return logs
 
 
@@ -509,7 +510,7 @@ def main(args):
 
         if args.cpc_mode == "bert":
             cpcModel = model.CPCBertModel(encoderNet, arNet,
-                                           blockSize=args.nPredicts)
+                                          blockSize=args.nPredicts)
             cpcModel.supervised = args.supervised
         else:
             cpcModel = model.CPCModel(encoderNet, arNet)
@@ -587,7 +588,8 @@ def main(args):
         n_epoch = args.schedulerRamp
         print(f"Ramp activated. n_e = {n_epoch}")
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,
-                                                      lr_lambda=lambda epoch : ramp_scheduling_function(n_epoch, epoch),
+                                                      lr_lambda=lambda epoch: ramp_scheduling_function(
+                                                          n_epoch, epoch),
                                                       last_epoch=-1)
         for i in range(len(logs["epoch"])):
             scheduler.step()

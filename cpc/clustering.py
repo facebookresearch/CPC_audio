@@ -6,9 +6,9 @@ import sys
 import os
 import json
 from random import shuffle
-from criterion.research.clustering import kMeanCluster, kMeanGPU, fastDPMean, \
+from cpc.criterion.research.clustering import kMeanCluster, kMeanGPU, fastDPMean, \
     distanceEstimation
-from criterion.research.dim_reduction import loadDimReduction
+from cpc.criterion.research.dim_reduction import loadDimReduction
 
 
 def getQuantile(sortedData, percent):
@@ -43,9 +43,8 @@ def parseArgs(argv):
 
 
 if __name__ == "__main__":
-    from train import loadModel
-    from dataset import findAllSeqs, filterSeqs, AudioBatchData
-    from feature_maker import FeatureModule
+    from cpc.feature_loader import loadModel, FeatureModule
+    from cpc.dataset import findAllSeqs, filterSeqs, AudioBatchData
 
     args = parseArgs(sys.argv[1:])
     seqNames, speakers = findAllSeqs(args.pathDB,
