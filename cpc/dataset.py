@@ -138,7 +138,7 @@ class AudioBatchData(Dataset):
         indexSpeaker = 0
 
         # To accelerate the process a bit
-        self.nextData.sort()
+        self.nextData.sort(key=lambda x: (x[0], x[1]))
         tmpData = []
 
         for speaker, seqName, seq in self.nextData:
@@ -449,7 +449,8 @@ def findAllSeqs(dirName,
         filtered_files = [f for f in filenames if f.endswith(extension)]
 
         if len(filtered_files) > 0:
-            speakerStr = (os.sep).join(root[prefixSize:].split(os.sep)[:speaker_level])
+            speakerStr = (os.sep).join(
+                root[prefixSize:].split(os.sep)[:speaker_level])
             if speakerStr not in speakersTarget:
                 speakersTarget[speakerStr] = len(speakersTarget)
             speaker = speakersTarget[speakerStr]
