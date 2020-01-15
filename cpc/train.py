@@ -12,6 +12,7 @@ import sys
 import cpc.criterion as cr
 import cpc.model as model
 import cpc.utils.misc as utils
+import cpc.feature_loader as fl
 from cpc.cpc_default_config import set_default_cpc_config
 from cpc.dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels
 from cpc.criterion.research import CPCBertCriterion, DeepEmbeddedClustering, \
