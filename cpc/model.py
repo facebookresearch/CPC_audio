@@ -12,10 +12,12 @@ import torch
 # Networks
 ###########################################
 
+
 class IDModule(nn.Module):
 
     def __init__(self, *args, **kwargs):
         super(IDModule, self).__init__()
+
     def forward(self, x):
         return x
 
@@ -25,7 +27,7 @@ class ChannelNorm(nn.Module):
     def __init__(self,
                  numFeatures,
                  epsilon=1e-05,
-                 affine =True):
+                 affine=True):
 
         super(ChannelNorm, self).__init__()
         if affine:
@@ -33,11 +35,11 @@ class ChannelNorm(nn.Module):
                                                               numFeatures, 1))
             self.bias = nn.parameter.Parameter(torch.Tensor(1, numFeatures, 1))
         else:
-            self.weight=None
-            self.bias=None
+            self.weight = None
+            self.bias = None
         self.epsilon = epsilon
         self.p = 0
-        self.affine=affine
+        self.affine = affine
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -69,7 +71,7 @@ class CPCEncoder(nn.Module):
             raise ValueError(f"Norm mode must be in {validModes}")
 
         if normMode == "instanceNorm":
-            normLayer = lambda x : nn.InstanceNorm1d(x, affine=True)
+            def normLayer(x): return nn.InstanceNorm1d(x, affine=True)
         elif normMode == "ID":
             normLayer = IDModule
         elif normMode == "layerNorm":
@@ -204,10 +206,10 @@ class CPCAR(nn.Module):
 
 class NoAr(nn.Module):
 
-     def __init__(self, *args):
+    def __init__(self, *args):
         super(NoAr, self).__init__()
 
-     def forward(self, x):
+    def forward(self, x):
         return x
 
 
@@ -276,6 +278,7 @@ class CPCModel(nn.Module):
         super(CPCModel, self).__init__()
         self.gEncoder = encoder
         self.gAR = AR
+
     def forward(self, batchData, label):
         encodedData = self.gEncoder(batchData).permute(0, 2, 1)
         cFeature = self.gAR(encodedData)

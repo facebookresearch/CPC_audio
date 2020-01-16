@@ -133,7 +133,7 @@ class NoneCriterion(BaseCriterion):
 
     def forward(self, cFeature, encodedData, label):
         return torch.zeros(1, 1, device=cFeature.device), \
-                torch.zeros(1, 1, device=cFeature.device)
+            torch.zeros(1, 1, device=cFeature.device)
 
 
 class CPCUnsupersivedCriterion(BaseCriterion):
@@ -306,7 +306,8 @@ class AdvSpeakerCriterion(BaseCriterion):
         features = features.mean(dim=1)
         predictions = self.linearSpeakerClassifier(features)
         if label is None:
-            loss = (self.entropyCriterion(predictions) * self.softMax(predictions)).sum(dim=1).view(-1)
+            loss = (self.entropyCriterion(predictions) *
+                    self.softMax(predictions)).sum(dim=1).view(-1)
             acc = torch.zeros(1, 1).cuda()
         else:
             loss = self.lossCriterion(predictions, label).view(1, -1)
@@ -332,7 +333,6 @@ class PhoneCriterion(BaseCriterion):
 
         self.lossCriterion = nn.CrossEntropyLoss()
         self.onEncoder = onEncoder
-
 
     def forward(self, cFeature, otherEncoded, label):
 

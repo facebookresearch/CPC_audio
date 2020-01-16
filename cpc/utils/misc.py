@@ -5,6 +5,8 @@
 import json
 import numpy as np
 from copy import deepcopy
+
+
 def untensor(d):
     if isinstance(d, list):
         return [untensor(v) for v in d]
@@ -18,6 +20,7 @@ def untensor(d):
 def save_logs(data, pathLogs):
     with open(pathLogs, 'w') as file:
         json.dump(data, file, indent=2)
+
 
 def update_logs(logs, logStep, prevlogs=None):
     out = {}

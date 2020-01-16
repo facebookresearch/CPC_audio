@@ -2,12 +2,13 @@
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
-dependencies = ['torch']
-from feature_loader import getEncoder, getAR, loadArgs
-from cpc_default_config import get_default_cpc_config
-import argparse
-from model import CPCModel as cpcmodel
 from model import CPCBertModel as cpcbert
+from model import CPCModel as cpcmodel
+import argparse
+from cpc_default_config import get_default_cpc_config
+from feature_loader import getEncoder, getAR, loadArgs
+dependencies = ['torch']
+
 
 def CPCModel(pretrained=False, *args, **kwargs):
     """
@@ -33,7 +34,7 @@ def CPCModel(pretrained=False, *args, **kwargs):
     locArgs = get_default_cpc_config()
     if pretrained:
         checkpoint_url = 'https://dl.fbaipublicfiles.com/librilight/CPC_checkpoints/60k_epoch4-d0f474de.pt'
-        checkpoint = torch.hub.load_state_dict_from_url(checkpoint_url, 
+        checkpoint = torch.hub.load_state_dict_from_url(checkpoint_url,
                                                         progress=False)
         loadArgs(locArgs, argparse.Namespace(**checkpoint["config"]))
     else:

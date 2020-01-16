@@ -196,7 +196,7 @@ def loadDimReduction(path, centroidLimits):
     if centroidLimits is not None:
         centroidsVals = state_dict["centroid_values"]
         dimRed.selectDimensions(
-            (centroidsVals > centroidLimits[0]) * \
+            (centroidsVals > centroidLimits[0]) *
             (centroidsVals < centroidLimits[1]))
     return dimRed
 
