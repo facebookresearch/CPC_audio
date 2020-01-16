@@ -106,7 +106,8 @@ if __name__ == "__main__":
         json.dump(vars(args), file, indent=2)
 
     outData = [x[1] for x in
-               findAllSeqs(args.pathDB, extension=args.extension)[0]]
+               findAllSeqs(args.pathDB, extension=args.extension,
+                           loadCache=False)[0]]
 
     featureMaker = loadModel([args.pathCheckpoint])[0]
     stepSize = featureMaker.gEncoder.DOWNSAMPLING / 16000
