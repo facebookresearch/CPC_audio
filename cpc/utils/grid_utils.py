@@ -10,6 +10,7 @@ class SlurmWrapper:
     """
     We assume that checkpointing is done within trainer, each epoch.
     """
+
     def __init__(self, runnable, verbose=False):
         self.runnable = runnable
         self.args = None
@@ -29,7 +30,7 @@ class SlurmWrapper:
 
 
 def parse_json_sweep(config):
-    config = { k: v if type(v) is list else [v] for k, v in config.items() }
+    config = {k: v if type(v) is list else [v] for k, v in config.items()}
     perms = list(itertools.product(*config.values()))
 
     def to_arg(k, v):
@@ -41,7 +42,8 @@ def parse_json_sweep(config):
             assert '"' not in v, f"Key {k} has string value {v} which contains forbidden quotes."
             return f'--{k}={v}'
         else:
-            raise Exception(f"Key {k} has value {v} of unsupported type {type(v)}.")
+            raise Exception(
+                f"Key {k} has value {v} of unsupported type {type(v)}.")
 
     commands = []
     for p in perms:
@@ -54,5 +56,3 @@ def sweep(fname):
     with open(fname, 'r') as config_file:
         config = json.loads(config_file.read())
     return parse_json_sweep(config)
-
-

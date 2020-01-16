@@ -135,7 +135,6 @@ class testItemLoader(unittest.TestCase):
     def setUp(self):
         self.test_data_dir = Path(__file__).parent / 'test_data'
 
-
     def testLoadItemFile(self):
         path_item_file = self.test_data_dir / "dummy_item_file.item"
         out, context_match, phone_match, speaker_match = \

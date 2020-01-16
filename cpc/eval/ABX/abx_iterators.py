@@ -250,6 +250,7 @@ class ABXIterator:
     r"""
     Base class building ABX's triplets.
     """
+
     def __init__(self, abxDataset, max_size_group):
         self.max_size_group = max_size_group
         self.dataset = abxDataset
@@ -300,6 +301,7 @@ class ABXWithinGroupIterator(ABXIterator):
     r"""
     Iterator giving the triplets for the ABX within score.
     """
+
     def __init__(self, abxDataset, max_size_group):
 
         super(ABXWithinGroupIterator, self).__init__(abxDataset,
@@ -351,6 +353,7 @@ class ABXAcrossGroupIterator(ABXIterator):
     r"""
     Iterator giving the triplets for the ABX across score.
     """
+
     def __init__(self, abxDataset, max_size_group):
 
         super(ABXAcrossGroupIterator, self).__init__(abxDataset,
@@ -383,7 +386,6 @@ class ABXAcrossGroupIterator(ABXIterator):
     def get_other_speakers_in_group(self, i_start_group):
         c_id, p_id, s_id = self.dataset.get_ids(self.index_csp[i_start_group])
         return [v for k, v in self.get_speakers_from_cp[c_id][p_id].items() if k != s_id]
-
 
     def get_abx_triplet(self, i_a, i_b, i_x):
         i_start_a, i_end_a = i_a

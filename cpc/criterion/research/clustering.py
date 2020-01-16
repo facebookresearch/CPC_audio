@@ -57,7 +57,7 @@ class DPMeanClusterStep(torch.nn.Module):
 
 def kMeanGPU(dataLoader, featureMaker, k,
              MAX_ITER=100, EPSILON=1e-4,
-             perIterSize=-1, start_clusters = None):
+             perIterSize=-1, start_clusters=None):
 
     if start_clusters is None:
         Ck = []
@@ -95,11 +95,11 @@ def kMeanGPU(dataLoader, featureMaker, k,
                 locC, locN = clusterStep(cFeature)
                 Ck1 += locC.sum(dim=0, keepdim=True)
                 nItemsClusters += locN.sum(dim=0)
-                stored+=1
+                stored += 1
                 if stored >= perIterSize:
                     bar.update(iter)
-                    iter+=1
-                    stored=0
+                    iter += 1
+                    stored = 0
                     if iter >= MAX_ITER:
                         break
 
@@ -107,7 +107,8 @@ def kMeanGPU(dataLoader, featureMaker, k,
             Ck1 /= nItemsClusters
             lastDiff = (clusterStep.module.Ck - Ck1).norm(dim=2).max().item()
             if lastDiff < EPSILON:
-                print(f"Clustering ended in {iter} iterations out of {MAX_ITER}")
+                print(
+                    f"Clustering ended in {iter} iterations out of {MAX_ITER}")
                 break
             clusterStep.module.Ck.copy_(Ck1)
 
@@ -172,14 +173,14 @@ def fastDPMean(dataLoader, featureMaker, l,
                                     dim=1)
                     c1 = torch.cat([c1, torch.zeros(1, device=mu.device,
                                                     dtype=torch.long)],
-                                    dim=0)
+                                   dim=0)
                     index[indexFeature] = k
-                    k+=1
+                    k += 1
                 mu1 += torch.cat([features[index == p].sum(dim=0, keepdim=True)
-                                 for p in range(k)], dim=1)
+                                  for p in range(k)], dim=1)
                 c1 += torch.cat([(index == p).sum(dim=0, keepdim=True)
-                                    for p in range(k)], dim=0)
-                storedData+=1
+                                 for p in range(k)], dim=0)
+                storedData += 1
                 if storedData >= perIterSize:
                     #index = c1 > 0
                     c1 = c1.float().view(1, -1, 1) + 1e-4
@@ -187,15 +188,16 @@ def fastDPMean(dataLoader, featureMaker, l,
                     lastDiff = (mu - mu1).norm(dim=2).max().item()
                     #mu1 = mu1[:, index]
                     if lastDiff < EPSILON:
-                        print(f"Clustering ended in {iter} iterations out of {MAX_ITER}")
+                        print(
+                            f"Clustering ended in {iter} iterations out of {MAX_ITER}")
                         break
 
                     mu = mu1
                     k = mu.size(1)
                     mu1, c1 = resetTmpData()
-                    storedData=0
+                    storedData = 0
                     bar.update(iter)
-                    iter+=1
+                    iter += 1
 
                     if iter >= MAX_ITER:
                         break
@@ -225,7 +227,8 @@ def KMean(C, k, MAX_ITER=100, EPSILON=1e-4, batchSize=1000):
                              for p in range(k)], dim=1)
             lastDiff = (Ck - Ck1).norm(dim=2).max().item()
             if lastDiff < EPSILON:
-                print(f"Clustering ended in {iter} iterations out of {MAX_ITER}")
+                print(
+                    f"Clustering ended in {iter} iterations out of {MAX_ITER}")
                 break
             Ck = Ck1
 
@@ -260,7 +263,7 @@ def distanceEstimation(featureMaker, dataLoader,
 
     maxIter = nItems // maxSizeGroup
     if maxIter * maxSizeGroup < nItems:
-        maxIter+=1
+        maxIter += 1
 
     outDist = []
     nVectors = len(outData)
@@ -275,7 +278,8 @@ def distanceEstimation(featureMaker, dataLoader,
             maxBorn = min(minBorn + maxSizeGroup, nItems)
             sumData = outData[minBorn:maxBorn]
             P, C = sumData.size()
-            locDists = (sumData.view(1, P, C) - sumData.view(P, 1, C)).norm(dim=2)
+            locDists = (sumData.view(1, P, C) -
+                        sumData.view(P, 1, C)).norm(dim=2)
             locDists = locDists[locDists > 0].view(-1)
             outDist += locDists.tolist()
 
@@ -319,7 +323,6 @@ class ClusteringLoss(nn.Module):
         print(f"{nData} samples analyzed")
         index = int(self.TARGET_QUANTILE * nData)
         return distData[index]
-
 
     def updateCLusters(self, dataLoader, featureMaker,
                        MAX_ITER=20, EPSILON=1e-4):

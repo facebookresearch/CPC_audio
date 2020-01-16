@@ -243,9 +243,9 @@ def save_checkpoint(model_state, criterion_state, optimizer_state, best_state,
                     path_checkpoint):
 
     state_dict = {"gEncoder": model_state,
-                 "cpcCriterion": criterion_state,
-                 "optimizer": optimizer_state,
-                 "best": best_state}
+                  "cpcCriterion": criterion_state,
+                  "optimizer": optimizer_state,
+                  "best": best_state}
 
     torch.save(state_dict, path_checkpoint)
 

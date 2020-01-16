@@ -77,6 +77,7 @@ class ConstrainedLayer(nn.Module):
             x *= self.weight
         return x
 
+
 class EqualizedConv1d(ConstrainedLayer):
 
     def __init__(self,
@@ -147,4 +148,4 @@ class EqualizedLinear(ConstrainedLayer):
 
         ConstrainedLayer.__init__(self,
                                   nn.Linear(nChannelsPrevious, nChannels,
-                                  bias=bias), **kwargs)
+                                            bias=bias), **kwargs)

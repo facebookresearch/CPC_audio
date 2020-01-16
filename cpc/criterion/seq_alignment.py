@@ -86,7 +86,7 @@ def collapseLabelChain(inputLabels):
     return paddedOutput, outSizes
 
 
-def NeedlemanWunschAlignScore(seq1, seq2, d, m, r, normalize = True):
+def NeedlemanWunschAlignScore(seq1, seq2, d, m, r, normalize=True):
 
     N1, N2 = len(seq1), len(seq2)
 
@@ -96,7 +96,6 @@ def NeedlemanWunschAlignScore(seq1, seq2, d, m, r, normalize = True):
         tmpRes_[i][0] = i * d
     for j in range(N2 + 1):
         tmpRes_[0][j] = j * d
-
 
     for i in range(N1):
         for j in range(N2):
@@ -116,7 +115,7 @@ def NeedlemanWunschAlignScore(seq1, seq2, d, m, r, normalize = True):
 
 def get_seq_PER(seqLabels, detectedLabels):
     return NeedlemanWunschAlignScore(seqLabels, detectedLabels, -1, -1, 0,
-                                    normalize=True)
+                                     normalize=True)
 
 
 def getPER(dataLoader, featureMaker, blankLabel):
