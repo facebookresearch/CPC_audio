@@ -109,7 +109,7 @@ def loadArgs(args, locArgs, forbiddenAttr=None):
 
 
 def loadSupervisedCriterion(pathCheckpoint):
-    from criterion import CTCPhoneCriterion, PhoneCriterion
+    from .criterion import CTCPhoneCriterion, PhoneCriterion
 
     *_, args = getCheckpointData(os.path.dirname(pathCheckpoint))
     _, nPhones = parseSeqLabels(args.pathPhone)
@@ -152,31 +152,31 @@ def getCheckpointData(pathDir):
 def getEncoder(args):
 
     if args.encoder_type == 'mfcc':
-        from model import MFCCEncoder
+        from .model import MFCCEncoder
         return MFCCEncoder(args.hiddenEncoder)
     elif args.encoder_type == 'lfb':
-        from model import LFBEnconder
+        from .model import LFBEnconder
         return LFBEnconder(args.hiddenEncoder)
     else:
-        from model import CPCEncoder
+        from .model import CPCEncoder
         return CPCEncoder(args.hiddenEncoder, args.normMode)
 
 
 def getAR(args):
     if args.arMode == 'transformer':
-        from transformers import buildTransformerAR
+        from .transformers import buildTransformerAR
         arNet = buildTransformerAR(args.hiddenEncoder, 1,
                                    args.sizeWindow // 160, args.abspos)
         args.hiddenGar = args.hiddenEncoder
     elif args.cpc_mode == "bert":
-        from model import BiDIRARTangled
+        from .model import BiDIRARTangled
         arNet = BiDIRARTangled(args.hiddenEncoder, args.hiddenGar,
                                args.nLevelsGRU)
     elif args.arMode == 'no_ar':
-        from model import NoAr
+        from .model import NoAr
         arNet = NoAr()
     else:
-        from model import CPCAR
+        from .model import CPCAR
         arNet = CPCAR(args.hiddenEncoder, args.hiddenGar,
                       args.samplingType == "sequential",
                       args.nLevelsGRU,
