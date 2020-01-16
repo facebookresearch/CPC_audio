@@ -1,12 +1,14 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 import unittest
 import torch
 import os
+import cpc.feature_loader as fl
 from .dataset import AudioBatchData, findAllSeqs, filterSeqs
 from nose.tools import eq_, ok_
 from math import log
-# from phone_cluster_correlation import convertToProbaMatrix, getMutualInfo, \
-#                                       getEntropy, featureLabelToRepMat, \
-#                                       getSegsStats
 
 
 class TestDataLoader(unittest.TestCase):
@@ -209,3 +211,76 @@ class TestPER(unittest.TestCase):
 
         expected_PER = 4. / 7.
         eq_(get_seq_PER(ref_seq, pred_seq), expected_PER)
+
+
+class TestEncoderBuilder(unittest.TestCase):
+
+    def setUp(self):
+        from cpc.cpc_default_config import get_default_cpc_config
+        self.default_args = get_default_cpc_config()
+
+    def testBuildMFCCEncoder(self):
+        from cpc.model import MFCCEncoder
+        self.default_args.encoder_type = 'mfcc'
+        self.default_args.hiddenEncoder = 30
+
+        test_encoder = fl.getEncoder(self.default_args)
+        ok_(isinstance(test_encoder, MFCCEncoder))
+        eq_(test_encoder.dimEncoded, 30)
+
+    def testBuildLFBEnconder(self):
+        from cpc.model import LFBEnconder
+        self.default_args.encoder_type = 'lfb'
+        self.default_args.hiddenEncoder = 12
+
+        test_encoder = fl.getEncoder(self.default_args)
+        ok_(isinstance(test_encoder, LFBEnconder))
+        eq_(test_encoder.dimEncoded, 12)
+
+    def testBuildCPCEncoder(self):
+        from cpc.model import CPCEncoder
+        test_encoder = fl.getEncoder(self.default_args)
+        ok_(isinstance(test_encoder, CPCEncoder))
+        eq_(test_encoder.dimEncoded, 256)
+
+
+class TestARBuilder(unittest.TestCase):
+
+    def setUp(self):
+        from cpc.cpc_default_config import get_default_cpc_config
+        self.default_args = get_default_cpc_config()
+
+    def testbuildBertAR(self):
+        from cpc.model import BiDIRARTangled
+        self.default_args.cpc_mode = 'bert'
+
+        test_ar = fl.getAR(self.default_args)
+        ok_(isinstance(test_ar, BiDIRARTangled))
+
+    def testbuildNoAR(self):
+        from cpc.model import NoAr
+        self.default_args.arMode = 'no_ar'
+
+        test_ar = fl.getAR(self.default_args)
+        ok_(isinstance(test_ar, NoAr))
+
+    def testbuildNoAR(self):
+        from cpc.model import CPCAR
+        self.default_args.arMode = 'LSTM'
+        test_ar = fl.getAR(self.default_args)
+        ok_(isinstance(test_ar, CPCAR))
+        ok_(isinstance(test_ar.baseNet, torch.nn.LSTM))
+
+    def testbuildNoAR(self):
+        from cpc.model import CPCAR
+        self.default_args.arMode = 'GRU'
+        test_ar = fl.getAR(self.default_args)
+        ok_(isinstance(test_ar, CPCAR))
+        ok_(isinstance(test_ar.baseNet, torch.nn.GRU))
+
+    def testbuildNoAR(self):
+        from cpc.model import CPCAR
+        self.default_args.arMode = 'RNN'
+        test_ar = fl.getAR(self.default_args)
+        ok_(isinstance(test_ar, CPCAR))
+        ok_(isinstance(test_ar.baseNet, torch.nn.RNN))

@@ -1,3 +1,7 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
@@ -73,6 +77,7 @@ class CPCEncoder(nn.Module):
         else:
             normLayer = nn.BatchNorm1d
 
+        self.dimEncoded = sizeHidden
         self.conv0 = nn.Conv1d(1, sizeHidden, 10, stride=5, padding=3)
         self.batchNorm0 = normLayer(sizeHidden)
         self.conv1 = nn.Conv1d(sizeHidden, sizeHidden, 8, stride=4, padding=2)
@@ -105,6 +110,7 @@ class MFCCEncoder(nn.Module):
 
         super(MFCCEncoder, self).__init__()
         melkwargs = {"n_mels": max(128, dimEncoded), "n_fft": 321}
+        self.dimEncoded = dimEncoded
         self.MFCC = torchaudio.transforms.MFCC(n_mfcc=dimEncoded,
                                                melkwargs=melkwargs)
 
