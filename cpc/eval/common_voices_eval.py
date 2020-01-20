@@ -1,7 +1,3 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
-#
-# This source code is licensed under the MIT license found in the
-# LICENSE file in the root directory of this source tree.
 import argparse
 import os
 import torchaudio
@@ -80,7 +76,7 @@ class SingleSequenceDataset(Dataset):
         poolData.sort()
 
         totSize = 0
-        minSizePhone = 1000000
+        minSizePhone = float('inf')
         for seqName, seq in poolData:
             self.phoneLabels += self.phoneLabelsDict[seqName]
             self.phoneOffsets.append(len(self.phoneLabels))
@@ -186,59 +182,6 @@ class CTCphone_criterion(torch.nn.Module):
             loss = 0
 
         return loss
-
-
-class MFCCModel(torch.nn.Module):
-
-    def __init__(self, sampleRate=16000):
-        super(MFCCModel, self).__init__()
-        from shennong.features.processor.mfcc import MfccProcessor
-        from shennong.features.postprocessor.delta import DeltaPostProcessor
-        self.sampleRate = sampleRate
-        self.n_mfcc = 13
-        self.mfcc_transform = MfccProcessor(sample_rate=sampleRate)
-        self.deltaTransform = DeltaPostProcessor(order=2)
-        self.epsilon = 1e-8
-
-    def forward(self, feature, *args):
-        B, C, S = feature.size()
-        assert(C == 1)
-        out = []
-        for b in range(B):
-            npData = feature[b].view(S, 1).cpu().numpy()
-            audioData = Audio(npData, self.sampleRate)
-            audioFeature = self.mfcc_transform.process(audioData)
-            audioFeature = self.deltaTransform.process(audioFeature).data
-            out.append(torch.tensor(audioFeature).view(1, -1, 3*self.n_mfcc))
-
-        x = torch.cat(out, dim=0).cuda()
-        m = x.mean(dim=1, keepdims=True)
-        v = x.var(dim=1, keepdims=True)
-        x = (x-m) / torch.sqrt(v + self.epsilon)
-        return x, None, None
-
-
-class BottleNeckModel(torch.nn.Module):
-
-    def __init__(self, sampleRate=16000):
-        super(BottleNeckModel, self).__init__()
-        from shennong.features.processor.bottleneck import BottleneckProcessor
-        self.processor = BottleneckProcessor(weights='BabelMulti')
-        self.outDim = 80
-        self.sampleRate = sampleRate
-
-    def forward(self, feature, * args):
-        B, C, S = feature.size()
-        assert(C == 1)
-        out = []
-        for b in range(B):
-            npData = feature[b].view(S, 1).cpu().numpy()
-            audioData = Audio(npData, self.sampleRate)
-            audioFeature = self.processor.process(audioData).data
-            out.append(torch.tensor(audioFeature).view(1, -1, self.outDim))
-
-        x = torch.cat(out, dim=0).cuda()
-        return x, None, None
 
 
 class IDModule(torch.nn.Module):
@@ -439,36 +382,68 @@ if __name__ == "__main__":
     subparsers = parser.add_subparsers(dest='command')
 
     parser_train = subparsers.add_parser('train')
-    parser_train.add_argument('pathDB', type=str)
-    parser_train.add_argument('pathPhone', type=str)
-    parser_train.add_argument('pathCheckpoint', type=str)
+    parser_train.add_argument('pathDB', type=str,
+                              help='Path to the directory containing the '
+                              'audio data / pre-computed features.')
+    parser_train.add_argument('pathPhone', type=str,
+                              help='Path to the .txt file containing the '
+                              'phone transcription.')
+    parser_train.add_argument('pathCheckpoint', type=str,
+                              help='Path to the CPC checkpoint to load. '
+                              'Set to ID to work with pre-cimputed features.')
     parser_train.add_argument('--freeze', action='store_true',
-                              help="Freeze the CPC layers")
-    parser_train.add_argument('--pathTrain', default=None, type=str)
-    parser_train.add_argument('--pathVal', default=None, type=str)
-    parser_train.add_argument('--file_extension', type=str, default=".mp3")
+                              help="Freeze the CPC features layers")
+    parser_train.add_argument('--pathTrain', default=None, type=str,
+                              help='Path to the .txt files containing the '
+                              'list of the training sequences.')
+    parser_train.add_argument('--pathVal', default=None, type=str,
+                              help='Path to the .txt files containing the '
+                              'list of the validation sequences.')
+    parser_train.add_argument('--file_extension', type=str, default=".mp3",
+                              help='Extension of the files in the '
+                              'dataset')
     parser_train.add_argument('--batchSize', type=int, default=8)
     parser_train.add_argument('--nEpochs', type=int, default=30)
-    parser_train.add_argument('--beta1', type=float, default=0.9)
-    parser_train.add_argument('--beta2', type=float, default=0.999)
-    parser_train.add_argument('--epsilon', type=float, default=1e-08)
-    parser_train.add_argument('--lr', type=float, default=2e-04)
+    parser_train.add_argument('--beta1', type=float, default=0.9,
+                              help='Value of beta1 for the Adam optimizer.')
+    parser_train.add_argument('--beta2', type=float, default=0.999,
+                              help='Value of beta2 for the Adam optimizer.')
+    parser_train.add_argument('--epsilon', type=float, default=1e-08,
+                              help='Value of epsilon for the Adam optimizer.')
+    parser_train.add_argument('--lr', type=float, default=2e-04,
+                              help='Learning rate.')
     parser_train.add_argument('-o', '--output', type=str, default='out',
                               help="Output directory")
-    parser_train.add_argument('--debug', action='store_true')
-    parser_train.add_argument('--no_pretraining', action='store_true')
-    parser_train.add_argument('--LSTM', action='store_true')
-    parser_train.add_argument('--seqNorm', action='store_true')
-    parser_train.add_argument('--kernelSize', type=int, default=8)
+    parser_train.add_argument('--debug', action='store_true',
+                              help='If activated, will only load a few '
+                              'sequences from the dataset.')
+    parser_train.add_argument('--no_pretraining', action='store_true',
+                              help='Activate use a randmly initialized '
+                              'network')
+    parser_train.add_argument('--LSTM', action='store_true',
+                              help='Activate to add a LSTM to the phone '
+                              'classifier')
+    parser_train.add_argument('--seqNorm', action='store_true',
+                              help='Activate if you want to normalize each '
+                              'batch of features through time before the '
+                              'phone classification.')
+    parser_train.add_argument('--kernelSize', type=int, default=8,
+                              help='Number of features to concatenate before '
+                              'feeding them to the phone classifier.')
     parser_train.add_argument('--dropout', action='store_true')
-    parser_train.add_argument('--in_dim', type=int, default=1)
+    parser_train.add_argument('--in_dim', type=int, default=1,
+                              help='Dimension of the input data: useful when '
+                              'working with pre-computed features or '
+                              'stereo audio.')
     parser_train.add_argument('--loss_reduction', type=str, default='mean',
                               choices=['mean', 'sum'])
 
     parser_per = subparsers.add_parser('per')
     parser_per.add_argument('output', type=str)
     parser_per.add_argument('--batchSize', type=int, default=8)
-    parser_per.add_argument('--debug', action='store_true')
+    parser_per.add_argument('--debug', action='store_true',
+                            help='If activated, will only load a few '
+                            'sequences from the dataset.')
     parser_per.add_argument('--pathDB',
                             help="For computing the PER on another dataset",
                             type=str, default=None)
@@ -478,7 +453,6 @@ if __name__ == "__main__":
     parser_per.add_argument('--pathPhone',
                             help="For computing the PER on specific sequences",
                             default=None, type=str)
-    parser_per.add_argument('--dataset_levels', type=int, default=0)
     parser_per.add_argument('--file_extension', type=str, default=".mp3")
     parser_per.add_argument('--name', type=str, default="0")
 
@@ -519,15 +493,7 @@ if __name__ == "__main__":
         seqVal = seqVal[:100]
 
     downsampling_factor = 160
-    if args.pathCheckpoint == 'MFCC':
-        from shennong.audio import Audio
-        feature_maker = MFCCModel()
-        hiddenGar = 39
-    elif args.pathCheckpoint == 'BN':
-        from shennong.audio import Audio
-        feature_maker = BottleNeckModel()
-        hiddenGar = 80
-    elif args.pathCheckpoint == 'ID':
+    if args.pathCheckpoint == 'ID':
         downsampling_factor = 1
         feature_maker = IDModule()
         hiddenGar = args.in_dim

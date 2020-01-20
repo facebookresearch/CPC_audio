@@ -105,7 +105,7 @@ def update_base_parser(parser):
                         help="Use the GPU to compute distances")
     parser.add_argument('--mode', type=str, default='all',
                         choices=['all', 'within', 'across'],
-                        help="Choose the mode of the ABX score to compute")
+                        help="Type of ABX score to compute")
     parser.add_argument("--max_size_group", type=int, default=10,
                         help="Max size of a group while computing the"
                              "ABX score")
@@ -130,18 +130,31 @@ def parse_args(argv):
                                    "the triplets labels")
     parser_checkpoint.add_argument('path_dataset', type=str,
                                    help="Path to the dataset")
-    parser_checkpoint.add_argument('--seq_norm', action='store_true')
-    parser_checkpoint.add_argument('--strict', action='store_true')
+    parser_checkpoint.add_argument('--seq_norm', action='store_true',
+                                   help='If activated, normalize each batch '
+                                   'of feature across the time channel before '
+                                   'computing ABX.')
+    parser_checkpoint.add_argument('--max_size_seq', default=64000, type=int,
+                                   help='Maximal number of frames to consider '
+                                   'when computing a batch of features.')
+    parser_checkpoint.add_argument('--strict', action='store_true',
+                                   help='If activated, each batch of feature '
+                                   'will contain exactly max_size_seq frames.')
     parser_checkpoint.add_argument('--file_extension', type=str,
-                                   default='.wav')
-    parser_checkpoint.add_argument('--get_encoded', action='store_true')
+                                   default='.wav',
+                                   help='Extension of ecah audio file in the '
+                                   'dataset.')
+    parser_checkpoint.add_argument('--get_encoded', action='store_true',
+                                   help='If activated, compute the ABX score '
+                                   'using the output of the encoder network.')
 
     parser_db = subparsers.add_parser('from_pre_computed')
     update_base_parser(parser_db)
     parser_db.add_argument('path_features', type=str,
                            help="Path to pre-computed torch features (.pt)")
     parser_db.add_argument('--file_extension', type=str,
-                           default='.pt')
+                           default='.pt', help='Extension of each feature '
+                           'in the dataset')
 
     # multi-gpu / multi-node
     return base_parser.parse_args(argv)
@@ -160,7 +173,8 @@ def main(argv):
 
         def feature_function(x): return buildFeature(feature_maker, x,
                                                      seqNorm=args.seq_norm,
-                                                     strict=args.strict)
+                                                     strict=args.strict,
+                                                     maxSizeSeq=args.max_size_seq)
     elif args.load == 'from_pre_computed':
         def feature_function(x): return torch.load(x, 'cpu')
 

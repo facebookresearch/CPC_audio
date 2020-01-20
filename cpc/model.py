@@ -214,7 +214,9 @@ class NoAr(nn.Module):
 
 
 class BiDIRARTangled(nn.Module):
-
+    r"""
+    Research: bidirectionnal model for BERT training.
+    """
     def __init__(self,
                  dimEncoded,
                  dimOutput,
@@ -238,7 +240,9 @@ class BiDIRARTangled(nn.Module):
 
 
 class BiDIRAR(nn.Module):
-
+    r"""
+    Research: bidirectionnal model for BERT training.
+    """
     def __init__(self,
                  dimEncoded,
                  dimOutput,

@@ -20,51 +20,8 @@ import cpc.feature_loader as fl
 from cpc.cpc_default_config import set_default_cpc_config
 from cpc.dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels
 from cpc.criterion.research import CPCBertCriterion, DeepEmbeddedClustering, \
-    DeepClustering, CTCCLustering
+    DeepClustering, CTCCLustering, buildNewPhoneDict
 from cpc.distributed_training.distributed_mode import init_distributed_mode
-
-
-def buildNewPhoneDict(pathDIR, seqNames, model, clusters, nk):
-
-    featureMaker = fl.FeatureModule(model, False)
-    featureMaker = fl.ModelClusterCombined(featureMaker, clusters, nk, 'int')
-    featureMaker.cuda()
-
-    outDict = {}
-    fillingStatus = torch.zeros(nk, dtype=torch.long)
-
-    print("Building the new features labels from clusters...")
-    for seqPath in seqNames:
-        fullPath = os.path.join(pathDIR, seqPath)
-        with torch.no_grad():
-            features = fl.buildFeature(featureMaker, fullPath, strict=True)
-            oneHotFeatures = fl.toOneHot(features, nk).view(-1, nk)
-            fillingStatus += oneHotFeatures.sum(dim=0)
-        outDict[os.path.splitext(os.path.basename(seqPath))[0]] = \
-            features.view(-1).tolist()
-    print("...done")
-    return outDict, fillingStatus
-
-
-def set_seed(seed):
-    random.seed(seed)
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-def cpuStats():
-    print(sys.version)
-    print(psutil.cpu_percent())
-    print(psutil.virtual_memory())
-
-
-def ramp_scheduling_function(n_epoch_ramp, epoch):
-    if epoch >= n_epoch_ramp:
-        return 1
-    else:
-        return (epoch + 1) / n_epoch_ramp
 
 
 def getCriterion(args, downsampling, nSpeakers, nPhones):
@@ -334,7 +291,7 @@ def run(trainDataset,
     for epoch in range(startEpoch, nEpoch):
 
         print(f"Starting epoch {epoch}")
-        cpuStats()
+        utils.cpu_stats()
 
         if clustering is not None:
             cpcModel.eval()
@@ -418,7 +375,7 @@ def main(args):
         init_distributed_mode(args)
     args.is_local_master = (not args.distributed) or (args.global_rank == 0)
 
-    set_seed(args.random_seed)
+    utils.set_seed(args.random_seed)
     logs = {"epoch": [], "iter": [], "saveStep": args.save_step}
     loadOptimizer = False
     if args.pathCheckpoint is not None and not args.restart:
@@ -430,7 +387,8 @@ def main(args):
                         forbiddenAttr={"nGPU", "pathCheckpoint",
                                        "debug", "restart", "local_rank",
                                        "global_rank", "world_size",
-                                       "n_nodes", "node_id", "n_gpu_per_node"})
+                                       "n_nodes", "node_id", "n_gpu_per_node",
+                                       "max_size_loaded"})
             args.load, loadOptimizer = [data], True
             args.loadCriterion = True
 
@@ -592,10 +550,16 @@ def main(args):
     if args.schedulerRamp is not None:
         n_epoch = args.schedulerRamp
         print(f"Ramp activated. n_e = {n_epoch}")
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,
-                                                      lr_lambda=lambda epoch: ramp_scheduling_function(
-                                                          n_epoch, epoch),
-                                                      last_epoch=-1)
+        scheduler_ramp = torch.optim.lr_scheduler.LambdaLR(optimizer,
+                                                           lr_lambda=lambda epoch: utils.ramp_scheduling_function(
+                                                               n_epoch, epoch),
+                                                           last_epoch=-1)
+        if scheduler is None:
+            scheduler = scheduler_ramp
+        else:
+            scheduler = utils.SchedulerCombiner([scheduler_ramp, scheduler],
+                                                [0, args.schedulerRamp])
+    if scheduler is not None:
         for i in range(len(logs["epoch"])):
             scheduler.step()
 
@@ -641,33 +605,79 @@ def parseArgs(argv):
     # Default arguments:
     parser = set_default_cpc_config(parser)
 
-    parser.add_argument('--distributed', action='store_true')
-    parser.add_argument("--local_rank", type=int, default=-1,
-                        help="Multi-GPU - Local rank")
-    parser.add_argument("--master_port", type=int, default=-1,
-                        help="Master port (for multi-node SLURM jobs)")
-    parser.add_argument('--pathDB', type=str, default=None)
-    parser.add_argument('--pathTrain', type=str, default=None)
-    parser.add_argument('--pathVal', type=str, default=None)
-    parser.add_argument('--pathPhone', type=str, default=None)
-    parser.add_argument('--supervised', action='store_true')
-    parser.add_argument('--load', type=str, default=None, nargs='*')
-    parser.add_argument('--loadCriterion', action='store_true')
-    parser.add_argument('--pathCheckpoint', type=str, default=None,
-                        help="Path of the output directory.")
-    parser.add_argument('--nGPU', type=int, default=-1)
-    parser.add_argument('--batchSizeGPU', type=int, default=8)
-    parser.add_argument('--debug', action='store_true')
-    parser.add_argument('--file_extension', type=str, default=".flac")
-    parser.add_argument('--restart', action='store_true',
-                        help="If any checkpoint is found, ignore it and "
-                             "restart the training from scratch.")
-    parser.add_argument('--save_step', type=int, default=5)
-    parser.add_argument('--CTC', action='store_true')
-    parser.add_argument('--n_process_loader', type=int, default=8)
-    parser.add_argument('--logging_step', type=int, default=1000)
-    parser.add_argument('--ignore_cache', action='store_true')
-    parser.add_argument('--max_size_loaded', type=int, default=4000000000)
+    group_db = parser.add_argument_group('Dataset')
+    group_db.add_argument('--pathDB', type=str, default=None,
+                          help='Path to the directory containing the '
+                          'data.')
+    group_db.add_argument('--file_extension', type=str, default=".flac",
+                          help="Extension of the audio files in the dataset.")
+    group_db.add_argument('--pathTrain', type=str, default=None,
+                          help='Path to a .txt file containing the list of the '
+                          'training sequences.')
+    group_db.add_argument('--pathVal', type=str, default=None,
+                          help='Path to a .txt file containing the list of the '
+                          'validation sequences.')
+    group_db.add_argument('--n_process_loader', type=int, default=8,
+                          help='Number of processes to call to load the '
+                          'dataset')
+    group_db.add_argument('--ignore_cache', action='store_true',
+                          help='Activate if the dataset has been modified '
+                          'since the last training session.')
+    group_db.add_argument('--max_size_loaded', type=int, default=4000000000,
+                          help='Maximal amount of data (in byte) a dataset '
+                          'can hold in memory at any given time')
+    group_supervised = parser.add_argument_group(
+        'Supervised mode (depreciated)')
+    group_supervised.add_argument('--supervised', action='store_true',
+                                  help='(Depreciated) Disable the CPC loss and activate '
+                                  'the supervised mode. By default, the supervised '
+                                  'training method is the speaker classification.')
+    group_supervised.add_argument('--pathPhone', type=str, default=None,
+                                  help='(Supervised mode only) Path to a .txt '
+                                  'containing the phone labels of the dataset. If given '
+                                  'and --supervised, will train the model using a '
+                                  'phone classification task.')
+    group_supervised.add_argument('--CTC', action='store_true')
+
+    group_save = parser.add_argument_group('Save')
+    group_save.add_argument('--pathCheckpoint', type=str, default=None,
+                            help="Path of the output directory.")
+    group_save.add_argument('--logging_step', type=int, default=1000)
+    group_save.add_argument('--save_step', type=int, default=5,
+                            help="Frequency (in epochs) at which a checkpoint "
+                            "should be saved")
+
+    group_load = parser.add_argument_group('Load')
+    group_load.add_argument('--load', type=str, default=None, nargs='*',
+                            help="Load an exsiting checkpoint. Should give a path "
+                            "to a .pt file. The directory containing the file to "
+                            "load should also have a 'checkpoint.logs' and a "
+                            "'checkpoint.args'")
+    group_load.add_argument('--loadCriterion', action='store_true',
+                            help="If --load is activated, load the state of the "
+                            "training criterion as well as the state of the "
+                            "feature network (encoder + AR)")
+    group_load.add_argument('--restart', action='store_true',
+                            help="If any checkpoint is found, ignore it and "
+                            "restart the training from scratch.")
+
+    group_gpu = parser.add_argument_group('GPUs')
+    group_gpu.add_argument('--nGPU', type=int, default=-1,
+                           help="Number of GPU to use (default: use all "
+                           "available GPUs)")
+    group_gpu.add_argument('--batchSizeGPU', type=int, default=8,
+                           help='Number of batches per GPU.')
+    parser.add_argument('--debug', action='store_true',
+                        help="Load only a very small amount of files for "
+                        "debugging purposes.")
+
+    group_distrubed = parser.add_argument_group(
+        'Distributed training (FAIR only)')
+    group_distrubed.add_argument('--distributed', action='store_true')
+    group_distrubed.add_argument("--local_rank", type=int, default=-1,
+                                 help="Multi-GPU - Local rank")
+    group_distrubed.add_argument("--master_port", type=int, default=-1,
+                                 help="Master port (for multi-node SLURM jobs)")
     args = parser.parse_args(argv)
 
     if args.pathDB is None and (args.pathCheckpoint is None or args.restart):

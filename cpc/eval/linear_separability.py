@@ -135,10 +135,15 @@ def parse_args(argv):
     parser.add_argument('--pathCheckpoint', type=str, default='out',
                         help="Path of the output directory where the "
                         " checkpoints should be dumped.")
-    parser.add_argument('--nGPU', type=int, default=-1)
-    parser.add_argument('--batchSizeGPU', type=int, default=8)
+    parser.add_argument('--nGPU', type=int, default=-1,
+                        help='Bumber of GPU. Default=-1, use all available '
+                        'GPUs')
+    parser.add_argument('--batchSizeGPU', type=int, default=8,
+                        help='Batch size per GPU.')
     parser.add_argument('--n_epoch', type=int, default=10)
-    parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--debug', action='store_true',
+                        help='If activated, will load only a small number '
+                        'of audio data.')
     parser.add_argument('--unfrozen', action='store_true',
                         help="If activated, update the feature network as well"
                         " as the linear classifier")
@@ -152,16 +157,19 @@ def parse_args(argv):
     parser.add_argument('--get_encoded', action='store_true',
                         help="If activated, will work with the output of the "
                         " convolutional encoder (see CPC's architecture).")
-    parser.add_argument('--lr', type=float, default=2e-4)
-    parser.add_argument('--beta1', type=float, default=0.9)
-    parser.add_argument('--beta2', type=float, default=0.999)
-    parser.add_argument('--epsilon', type=float, default=2e-8)
+    parser.add_argument('--lr', type=float, default=2e-4,
+                        help='Learning rate.')
+    parser.add_argument('--beta1', type=float, default=0.9,
+                        help='Value of beta1 for the Adam optimizer.')
+    parser.add_argument('--beta2', type=float, default=0.999,
+                        help='Value of beta2 for the Adam optimizer.')
+    parser.add_argument('--epsilon', type=float, default=2e-8,
+                        help='Value of epsilon for the Adam optimizer.')
     parser.add_argument('--ignore_cache', action='store_true',
                         help="Activate if the sequences in pathDB have"
                         " changed.")
     parser.add_argument('--size_window', type=int, default=20480,
-                        help="Number of frame to give to the feature make at"
-                        " the same time.")
+                        help="Number of frames to consider in each batch.")
     args = parser.parse_args(argv)
     if args.nGPU < 0:
         args.nGPU = torch.cuda.device_count()
@@ -234,7 +242,7 @@ def main(argv):
     g_params = list(criterion.parameters())
     model.optimize = False
     model.eval()
-    if not args.unfrozen:
+    if args.unfrozen:
         print("Working in full fine-tune mode")
         g_params += list(model.parameters())
         model.optimize = True

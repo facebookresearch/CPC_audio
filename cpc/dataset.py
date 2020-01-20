@@ -221,7 +221,7 @@ class AudioBatchData(Dataset):
         return BatchSampler(sampler, batchSize, True)
 
     def getDataLoader(self, batchSize, type, randomOffset, numWorkers=0,
-                      f16=False, onLoop=-1):
+                      onLoop=-1):
         r"""
         Get a batch sampler for the current dataset.
         Args:
@@ -251,7 +251,7 @@ class AudioBatchData(Dataset):
             return self.getBaseSampler(type, batchSize, offset)
 
         return AudioLoader(self, samplerCall, nLoops, self.loadNextPack,
-                           totSize, numWorkers, f16)
+                           totSize, numWorkers)
 
 
 def loadFile(data):
@@ -262,22 +262,34 @@ def loadFile(data):
 
 
 class AudioLoader(object):
-
+    r"""
+    A DataLoader meant to handle an AudioBatchData object.
+    In order to handle big datasets AudioBatchData works with big chunks of
+    audio it loads sequentially in memory: once all batches have been sampled
+    on a chunk, the AudioBatchData loads the next one.
+    """
     def __init__(self,
                  dataset,
                  samplerCall,
                  nLoop,
                  updateCall,
                  size,
-                 numWorkers,
-                 f16):
+                 numWorkers):
+        r"""
+        Args:
+            - dataset (AudioBatchData): target dataset
+            - samplerCall (function): batch-sampler to call
+            - nLoop (int): number of chunks to load
+            - updateCall (function): function loading the next chunk
+            - size (int): total number of batches
+            - numWorkers (int): see torch.utils.data.DataLoader
+        """
         self.samplerCall = samplerCall
         self.updateCall = updateCall
         self.nLoop = nLoop
         self.size = size
         self.dataset = dataset
         self.numWorkers = numWorkers
-        self.f16 = f16
 
     def __len__(self):
         return self.size
@@ -290,8 +302,6 @@ class AudioLoader(object):
                                     batch_sampler=sampler,
                                     num_workers=self.numWorkers)
             for x in dataloader:
-                if self.f16:
-                    x[0] = x[0].half()
                 yield x
             if i < self.nLoop - 1:
                 self.updateCall()

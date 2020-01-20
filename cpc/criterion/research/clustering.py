@@ -5,6 +5,7 @@
 import progressbar
 import torch
 import torch.nn as nn
+import cpc.feature_loader as fl
 from .. import CTCPhoneCriterion
 
 
@@ -53,6 +54,28 @@ class DPMeanClusterStep(torch.nn.Module):
         distance, index = (features - self.mu).norm(dim=2).min(dim=1)
         maxDist = distance.max().view(1)
         return distance, index, maxDist
+
+
+def buildNewPhoneDict(pathDIR, seqNames, model, clusters, nk):
+
+    featureMaker = fl.FeatureModule(model, False)
+    featureMaker = fl.ModelClusterCombined(featureMaker, clusters, nk, 'int')
+    featureMaker.cuda()
+
+    outDict = {}
+    fillingStatus = torch.zeros(nk, dtype=torch.long)
+
+    print("Building the new features labels from clusters...")
+    for seqPath in seqNames:
+        fullPath = os.path.join(pathDIR, seqPath)
+        with torch.no_grad():
+            features = fl.buildFeature(featureMaker, fullPath, strict=True)
+            oneHotFeatures = fl.toOneHot(features, nk).view(-1, nk)
+            fillingStatus += oneHotFeatures.sum(dim=0)
+        outDict[os.path.splitext(os.path.basename(seqPath))[0]] = \
+            features.view(-1).tolist()
+    print("...done")
+    return outDict, fillingStatus
 
 
 def kMeanGPU(dataLoader, featureMaker, k,

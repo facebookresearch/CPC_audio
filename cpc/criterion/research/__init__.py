@@ -4,4 +4,4 @@
 # LICENSE file in the root directory of this source tree.
 from .bert import CPCBertCriterion
 from .clustering import DeepEmbeddedClustering, DeepClustering, \
-    CTCCLustering
+    CTCCLustering, buildNewPhoneDict
