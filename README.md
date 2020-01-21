@@ -117,6 +117,7 @@ Where:
 
 This model is also available via [torch.hub](https://pytorch.org/docs/stable/hub.html). For more details, have a look at hubconf.py.
 
+
 ## License
 
 CPC_audio is MIT licensed, as found in the LICENSE file.
