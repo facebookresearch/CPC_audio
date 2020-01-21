@@ -281,41 +281,6 @@ class SpeakerCriterion(BaseCriterion):
         return loss, acc
 
 
-class AdvSpeakerCriterion(BaseCriterion):
-
-    def __init__(self, dimEncoder, nSpeakers, onEncoder):
-
-        super(AdvSpeakerCriterion, self).__init__()
-        self.linearSpeakerClassifier = nn.Linear(
-            dimEncoder, nSpeakers)
-        self.lossCriterion = nn.CrossEntropyLoss()
-        self.entropyCriterion = nn.LogSoftmax(dim=1)
-        self.onEncoder = onEncoder
-        self.softMax = nn.Softmax(dim=1)
-        print(f"{nSpeakers} found")
-
-    def forward(self, cFeature, otherEncoded, label):
-
-        # cFeature.size() : batchSize x seq Size x hidden size
-        if self.onEncoder:
-            features = otherEncoded
-        else:
-            features = cFeature
-
-        B, S, H = features.size()
-        features = features.mean(dim=1)
-        predictions = self.linearSpeakerClassifier(features)
-        if label is None:
-            loss = (self.entropyCriterion(predictions) *
-                    self.softMax(predictions)).sum(dim=1).view(-1)
-            acc = torch.zeros(1, 1).cuda()
-        else:
-            loss = self.lossCriterion(predictions, label).view(1, -1)
-            acc = (predictions.max(1)[1] == label).double().mean().view(1, -1)
-
-        return loss, acc
-
-
 class PhoneCriterion(BaseCriterion):
 
     def __init__(self, dimEncoder, nPhones, onEncoder,

@@ -313,13 +313,6 @@ class TestARBuilder(unittest.TestCase):
         from cpc.cpc_default_config import get_default_cpc_config
         self.default_args = get_default_cpc_config()
 
-    def testbuildBertAR(self):
-        from cpc.model import BiDIRARTangled
-        self.default_args.cpc_mode = 'bert'
-
-        test_ar = fl.getAR(self.default_args)
-        ok_(isinstance(test_ar, BiDIRARTangled))
-
     def testbuildNoAR(self):
         from cpc.model import NoAr
         self.default_args.arMode = 'no_ar'

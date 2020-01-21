@@ -51,7 +51,7 @@ def set_default_cpc_config(parser):
                        help='(Supervised mode only). Number of layers in '
                        'the phone classification network.')
     group.add_argument('--cpc_mode', type=str, default=None,
-                       choices=['reverse', 'bert', 'none'],
+                       choices=['reverse', 'none'],
                        help='Some variations on CPC.')
     group.add_argument('--encoder_type', type=str,
                        choices=['cpc', 'mfcc', 'lfb'],
@@ -68,9 +68,6 @@ def set_default_cpc_config(parser):
                        "classification on the encoder's output.")
     group.add_argument('--random_seed', type=int, default=None,
                        help="Set a specific random seed.")
-    group.add_argument('--adversarial', action='store_true',
-                       help="(Depreciated) Activate the speaker adversarial "
-                       "training.")
     group.add_argument('--speakerEmbedding', type=int, default=0,
                        help="(Depreciated) Feed the prediction network with "
                        "speaker embeddings along with the usual sequence.")
@@ -90,21 +87,5 @@ def set_default_cpc_config(parser):
     group.add_argument('--abspos', action='store_true',
                        help='If the prediction network is a transformer, '
                        'active to use absolute coordinates.')
-    group.add_argument('--clustering', type=str, default=None,
-                       choices=['deepEmbedded', 'deepClustering',
-                                'CTCClustering'],
-                       help="(Research) add a clustering loss on top of the "
-                       "current training.")
-    group.add_argument('--n_clusters', type=int, default=200,
-                       help="(Clustering only) Number of clusters to compute")
-    group.add_argument('--cluster_delay', type=int, default=0,
-                       help="(Clustering only) wait the given number of "
-                       "epoch before activating the clustering loss.")
-    group.add_argument('--cluster_iter', type=int, default=100,
-                       help="(Clustering only) Maximal number of iterations "
-                       "when computing the clusters")
-    group.add_argument('--clustering_update', type=str, default='kmean',
-                       choices=['kmean', 'dpmean'],
-                       help="(Clustering only) Clustering method to use.")
 
     return parser

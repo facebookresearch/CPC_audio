@@ -9,7 +9,7 @@ import json
 import argparse
 from .cpc_default_config import get_default_cpc_config
 from .dataset import parseSeqLabels
-from .model import CPCModel, ConcatenatedModel, CPCBertModel
+from .model import CPCModel, ConcatenatedModel
 
 
 class FeatureModule(torch.nn.Module):
@@ -68,38 +68,6 @@ class ModelPhoneCombined(torch.nn.Module):
             pred = toOneHot(pred, P)
         else:
             pred = torch.nn.functional.softmax(pred, dim=2)
-        return pred
-
-
-class ModelClusterCombined(torch.nn.Module):
-    r"""
-    Concatenates a CPC feature maker and a clustering module.
-    """
-
-    def __init__(self, model, cluster, nk, outFormat):
-
-        if outFormat not in ['oneHot', 'int', 'softmax']:
-            raise ValueError(f'Invalid output format {outFormat}')
-
-        super(ModelClusterCombined, self).__init__()
-        self.model = model
-        self.cluster = cluster
-        self.nk = nk
-        self.outFormat = outFormat
-
-    def getDownsamplingFactor(self):
-        return self.model.getDownsamplingFactor()
-
-    def forward(self, data):
-        c_feature = self.model(data)
-        pred = self.cluster(c_feature)
-        if self.outFormat == 'oneHot':
-            pred = pred.min(dim=2)[1]
-            pred = toOneHot(pred, self.nk)
-        elif self.outFormat == 'int':
-            pred = pred.min(dim=2)[1]
-        else:
-            pred = torch.nn.functional.softmax(-pred, dim=2)
         return pred
 
 
@@ -172,10 +140,6 @@ def getAR(args):
         arNet = buildTransformerAR(args.hiddenEncoder, 1,
                                    args.sizeWindow // 160, args.abspos)
         args.hiddenGar = args.hiddenEncoder
-    elif args.cpc_mode == "bert":
-        from .model import BiDIRARTangled
-        arNet = BiDIRARTangled(args.hiddenEncoder, args.hiddenGar,
-                               args.nLevelsGRU)
     elif args.arMode == 'no_ar':
         from .model import NoAr
         arNet = NoAr()
@@ -208,12 +172,7 @@ def loadModel(pathCheckpoints, loadStateDict=True):
             encoderNet = getEncoder(locArgs)
 
             arNet = getAR(locArgs)
-            if locArgs.cpc_mode == "bert":
-                m_ = CPCBertModel(encoderNet, arNet,
-                                  blockSize=locArgs.nPredicts)
-                m_.supervised = locArgs.supervised
-            else:
-                m_ = CPCModel(encoderNet, arNet)
+            m_ = CPCModel(encoderNet, arNet)
 
         if loadStateDict:
             print(f"Loading the state dict at {path}")

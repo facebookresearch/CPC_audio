@@ -117,21 +117,6 @@ Where:
 
 This model is also available via [torch.hub](https://pytorch.org/docs/stable/hub.html). For more details, have a look at hubconf.py.
 
-## Running a grid-search over hyper-parameters (FAIR only)
-
-This feature requires submitit, which can be installed by running:
-`pip install git+ssh://git@github.com/fairinternal/submitit@master#egg=submitit`
-
-Premption is not yet supported, hence it is advised to use either `dev` or `priority` partitions.
-
-Running a grid-search is as simple as
-```json
-python grid_search.py --sweep=cpc/utils/small_grid.json --name=test --partition=dev
-```
-where `cpc/utils/small_grid.json` is a json file defining grid (as in [example](utils/small_grid.json)), `name` is the experiment name.
-The resulting models and stdout/stderr streams of the runs would appear in `~/cpc/<name>/<data-time>/`.
-
-You can use the `--dry_run` parameter which prevents the jobs from being actually launched.
 
 ## License
 
