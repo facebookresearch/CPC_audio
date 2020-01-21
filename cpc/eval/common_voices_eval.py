@@ -232,6 +232,8 @@ def train_step(train_loader,
         optimizer.zero_grad()
         seq, sizeSeq, phone, sizePhone = prepare_data(data)
         c_feature, _, _ = model(seq, None)
+        if not model.optimize:
+            c_feature = c_feature.detach()
         sizeSeq = sizeSeq / downsampling_factor
         loss = criterion(c_feature, sizeSeq, phone, sizePhone)
         loss.mean().backward()
