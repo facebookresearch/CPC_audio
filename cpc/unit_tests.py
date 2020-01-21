@@ -9,102 +9,165 @@ import cpc.feature_loader as fl
 from .dataset import AudioBatchData, findAllSeqs, filterSeqs
 from nose.tools import eq_, ok_
 from math import log
+from pathlib import Path
 
 
 class TestDataLoader(unittest.TestCase):
 
     def setUp(self):
 
-        self.seq_names = [(0, '6476/57446/6476-57446-0019.flac'),
-                          (1, '5678/43303/5678-43303-0032.flac'),
-                          (2, '1737/148989/1737-148989-0038.flac'),
-                          (3, '6081/42010/6081-42010-0006.flac'),
-                          (4, '1116/132851/1116-132851-0018.flac'),
-                          (5, '5393/19218/5393-19218-0024.flac'),
-                          (6, '4397/15668/4397-15668-0007.flac'),
-                          (7, '696/92939/696-92939-0032.flac'),
-                          (8, '3723/171115/3723-171115-0003.flac')]
+        self.seq_names = ['6476/57446/6476-57446-0019.flac',
+                          '5678/43303/5678-43303-0032.flac',
+                          '5678/43303/5678-43303-0024.flac',
+                          '5678/43301/5678-43301-0021.flac',
+                          '5393/19218/5393-19218-0024.flac',
+                          '4397/15668/4397-15668-0007.flac',
+                          '4397/15668/4397-15668-0003.flac']
 
-        self.path_db = "/datasets01_101/LibriSpeech/022219/train-clean-100/"
+        self.test_data_dir = Path(__file__).parent / 'test_data'
+        self.path_db = self.test_data_dir / 'test_db'
+        self.seq_list = self.test_data_dir / 'seq_list.txt'
         self.size_window = 20480
-        self.speaker_list = list(set([x[0] for x in self.seq_names]))
-
-    def testLoadData(self):
-
-        test_data = AudioBatchData(self.path_db, self.size_window,
-                                   self.seq_names, None, 9)
-        assert(test_data.getNSpeakers() == 9)
-        assert(test_data.getNSeqs() == 9)
 
     def testFindAllSeqs(self):
-        seq_names, speakers = findAllSeqs(self.path_db,
+        seq_names, speakers = findAllSeqs(str(self.path_db),
                                           extension=".flac")
-        expected_speakers = [f for f in os.listdir(self.path_db) if
-                             os.path.isdir(os.path.join(self.path_db, f))]
-        eq_(speakers, expected_speakers)
+        expected_output = [(0, '2911/12359/2911-12359-0007.flac'),
+                           (1, '4051/11218/4051-11218-0044.flac'),
+                           (2, '4397/15668/4397-15668-0003.flac'),
+                           (2, '4397/15668/4397-15668-0007.flac'),
+                           (3, '5393/19218/5393-19218-0024.flac'),
+                           (4, '5678/43301/5678-43301-0021.flac'),
+                           (4, '5678/43303/5678-43303-0024.flac'),
+                           (4, '5678/43303/5678-43303-0032.flac'),
+                           (5, '6476/57446/6476-57446-0019.flac')]
+
+        # We do not expect the findAllSeqs function to retrieve all sequences
+        # in a specific order. However, it should retrieve them all correctly
+
+        # Check the number of speakers
+        eq_(len(speakers), 6)
+
+        # Check the speakers names
+        eq_(set(speakers), {'2911', '4051', '4397', '5393', '5678', '6476'})
+
+        # Check that all speakers from 0 to 5 are represented
+        speaker_set = {x[0] for x in seq_names}
+        eq_(speaker_set, {x[0] for x in expected_output})
+
+        # Check the number of sequences
+        eq_(len(seq_names), len(expected_output))
+
+        # Check that the sequences are correct
+        sequence_set = {x[1] for x in seq_names}
+        eq_(sequence_set, {x[1] for x in expected_output})
+
+        # Check that the speakers are properly matched
+        for index_speaker, seq_name in seq_names:
+            speaker_name = str(Path(seq_name).stem).split('-')[0]
+            eq_(speakers[index_speaker], speaker_name)
 
     def testFindAllSeqsCustomSpeakers(self):
-        seq_names, speakers = findAllSeqs(self.path_db,
+        seq_names, speakers = findAllSeqs(str(self.path_db),
                                           extension=".flac",
                                           speaker_level=2)
-        outDirs = [f for f in os.listdir(self.path_db) if
-                   os.path.isdir(os.path.join(self.path_db, f))]
-        expected_speakers = []
-        for dir in outDirs:
-            full_dir = os.path.join(self.path_db, dir)
-            expected_speakers += [os.path.join(dir, f) for f in os.listdir(full_dir) if
-                                  os.path.isdir(os.path.join(full_dir, f))]
-        eq_(speakers, expected_speakers)
+        expected_speakers = {'2911/12359', '4051/11218', '4397/15668',
+                             '5393/19218', '5678/43301', '5678/43303',
+                             '6476/57446'}
+        eq_(set(speakers), expected_speakers)
+
+        for index_speaker, seq_name in seq_names:
+            speaker_name = '/'.join(str(Path(seq_name).stem).split('-')[:2])
+            eq_(speakers[index_speaker], speaker_name)
+
+        expected_output = [(0, '2911/12359/2911-12359-0007.flac'),
+                           (1, '4051/11218/4051-11218-0044.flac'),
+                           (2, '4397/15668/4397-15668-0003.flac'),
+                           (2, '4397/15668/4397-15668-0007.flac'),
+                           (3, '5393/19218/5393-19218-0024.flac'),
+                           (4, '5678/43301/5678-43301-0021.flac'),
+                           (5, '5678/43303/5678-43303-0024.flac'),
+                           (5, '5678/43303/5678-43303-0032.flac'),
+                           (6, '6476/57446/6476-57446-0019.flac')]
+
+        # Check that the sequences are correct
+        sequence_set = {x[1] for x in seq_names}
+        eq_(sequence_set, {x[1] for x in expected_output})
 
     def testFindAllSeqs0Speakers(self):
-        seq_names, speakers = findAllSeqs("/datasets01_101/LibriSpeech/022219/train-clean-100/103/1240",
+        seq_names, speakers = findAllSeqs(str(self.path_db / '2911/12359/'),
                                           extension=".flac")
         eq_(speakers, [''])
 
     def testFindAllSeqs0SpeakersForced(self):
-        seq_names, speakers = findAllSeqs("/datasets01_101/LibriSpeech/022219/train-clean-100/",
+        seq_names, speakers = findAllSeqs(str(self.path_db),
                                           extension=".flac", speaker_level=0)
         eq_(speakers, [''])
 
+    def testLoadData(self):
+
+        seq_names, speakers = findAllSeqs(str(self.path_db),
+                                          extension=".flac")
+        seq_names = filterSeqs(self.seq_list, seq_names)
+
+        expected_output = [(2, '4397/15668/4397-15668-0003.flac'),
+                           (2, '4397/15668/4397-15668-0007.flac'),
+                           (3, '5393/19218/5393-19218-0024.flac'),
+                           (4, '5678/43301/5678-43301-0021.flac'),
+                           (4, '5678/43303/5678-43303-0024.flac'),
+                           (4, '5678/43303/5678-43303-0032.flac'),
+                           (5, '6476/57446/6476-57446-0019.flac')]
+
+        eq_(len(seq_names), len(expected_output))
+        eq_({x[1] for x in seq_names}, {x[1] for x in expected_output})
+        phone_labels_dict = None
+        n_speakers = 9
+        test_data = AudioBatchData(self.path_db, self.size_window,
+                                   seq_names, phone_labels_dict, n_speakers)
+        assert(test_data.getNSpeakers() == 9)
+        assert(test_data.getNSeqs() == 7)
+
     def testDataLoader(self):
 
-        batch_size = 16
-        path_seqs = "/datasets01_101/LibriSpeech/022219/LibriSpeech100_labels_split/test_split.txt"
-        seq_names, speakers = findAllSeqs(self.path_db,
+        batch_size = 2
+        seq_names, speakers = findAllSeqs(str(self.path_db),
                                           extension=".flac")
-        seq_names = filterSeqs(path_seqs, seq_names)
+        seq_names = filterSeqs(self.seq_list, seq_names)
 
         test_data = AudioBatchData(self.path_db, self.size_window, seq_names,
                                    None, len(speakers))
 
-        # Check the number of speakers
-        nSpeaker = test_data.getNSpeakers()
-        eq_(nSpeaker, 251)
         test_data_loader = test_data.getDataLoader(batch_size, "samespeaker",
                                                    True, numWorkers=2)
+        visted_labels = set()
         for index, item in enumerate(test_data_loader):
             _, labels = item
             p = labels[0].item()
+            visted_labels.add(p)
             eq_(torch.sum(labels == p), labels.size(0))
+
+        eq_(len(visted_labels), 4)
 
     def testPartialLoader(self):
 
         batch_size = 16
+        seq_names, speakers = findAllSeqs(str(self.path_db),
+                                          extension=".flac")
+        seq_names = filterSeqs(self.seq_list, seq_names)
         test_data = AudioBatchData(self.path_db, self.size_window,
-                                   self.seq_names, None, len(
-                                       self.speaker_list),
+                                   seq_names, None, len(speakers),
                                    MAX_SIZE_LOADED=1000000)
         eq_(test_data.getNPacks(), 2)
         test_data_loader = test_data.getDataLoader(batch_size, "samespeaker",
                                                    True, numWorkers=2)
-        visted_labels = set([])
+        visted_labels = set()
         for index, item in enumerate(test_data_loader):
             _, labels = item
             p = labels[0].item()
             eq_(torch.sum(labels == p), labels.size(0))
             visted_labels.add(p)
 
-        eq_(set(range(len(self.speaker_list))), visted_labels)
+        eq_(len(visted_labels), 4)
 
 
 class TestPhonemParser(unittest.TestCase):
@@ -112,12 +175,13 @@ class TestPhonemParser(unittest.TestCase):
     def setUp(self):
         from .train import parseSeqLabels
         self.seqLoader = parseSeqLabels
-        self.pathPhone = \
-            "/private/home/mriviere/LibriSpeech/LibriSpeech100_labels_split/converted_aligned_phones.txt"
+        self.test_data_dir = Path(__file__).parent / 'test_data'
+        self.pathPhone = self.test_data_dir / 'phone_labels.txt'
+        self.path_db = self.test_data_dir / 'test_db'
 
     def testSeqLoader(self):
         phone_data, nPhones = self.seqLoader(self.pathPhone)
-        eq_(len(phone_data), 28539)
+        eq_(len(phone_data), 7)
         eq_(phone_data['step'], 160)
         eq_(phone_data['4051-11218-0044'][43], 14)
         eq_(len(phone_data['4051-11218-0044']), 1119)
@@ -129,9 +193,8 @@ class TestPhonemParser(unittest.TestCase):
                      (1, '4051/11218/4051-11218-0044.flac')]
         speakers = list(set([x[0] for x in seq_names]))
         phone_data, _ = self.seqLoader(self.pathPhone)
-        path_db = "/datasets01_101/LibriSpeech/022219/train-clean-100/"
         test_data = AudioBatchData(
-            path_db, size_window, seq_names, phone_data, len(speakers))
+            self.path_db, size_window, seq_names, phone_data, len(speakers))
         eq_(test_data.getPhonem(81280), [0, 0, 0, 0])
         eq_(test_data.getPhonem(84841), [0, 0, 0, 18])
         eq_(test_data.getPhonem(88201), [14, 14, 14, 14])
