@@ -31,6 +31,8 @@ def train_step(feature_maker, criterion, data_loader, optimizer):
         optimizer.zero_grad()
         batch_data, label = fulldata
         c_feature, encoded_data, _ = feature_maker(batch_data, None)
+        if not feature_maker.optimize:
+            c_feature, encoded_data = c_feature.detach(), encoded_data.detach()
         all_losses, all_acc = criterion(c_feature, encoded_data, label)
         totLoss = all_losses.sum()
         totLoss.backward()
