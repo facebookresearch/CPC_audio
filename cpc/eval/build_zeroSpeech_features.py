@@ -10,11 +10,8 @@ import argparse
 import numpy as np
 
 from cpc.dataset import findAllSeqs
-from cpc.criterion.research.clustering import kMeanCluster
 from cpc.feature_loader import buildFeature, FeatureModule, \
-    ModelPhoneCombined, loadSupervisedCriterion, \
-    ModelClusterCombined, loadModel
-from cpc.criterion.research.dim_reduction import loadDimReduction
+    ModelPhoneCombined, loadSupervisedCriterion, loadModel
 
 
 def getArgs(pathCheckpoints):
@@ -123,20 +120,6 @@ if __name__ == "__main__":
         criterion, nPhones = loadSupervisedCriterion(args.pathCheckpoint)
         featureMaker = ModelPhoneCombined(featureMaker, criterion,
                                           nPhones, args.oneHot)
-    if args.dimReduction is not None:
-        dimRed = loadDimReduction(args.dimReduction, args.centroidLimits)
-        featureMaker = torch.nn.Sequential(featureMaker, dimRed)
-    if args.clusters is not None:
-        cluster_state_dict = torch.load(args.clusters)
-        nClusters = cluster_state_dict['n_clusters']
-        clusterModule = kMeanCluster(torch.zeros(1, nClusters,
-                                                 cluster_state_dict["dim"]))
-        clusterModule.load_state_dict(cluster_state_dict['state_dict'])
-        mode = 'oneHot' if args.oneHot else 'softmax'
-        print(f"{nClusters} clusters found")
-        featureMaker = ModelClusterCombined(featureMaker, clusterModule,
-                                            nClusters,
-                                            mode).cuda()
     featureMaker = featureMaker.cuda(device=0)
 
     if not args.train_mode:

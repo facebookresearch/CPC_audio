@@ -19,29 +19,20 @@ import cpc.utils.misc as utils
 import cpc.feature_loader as fl
 from cpc.cpc_default_config import set_default_cpc_config
 from cpc.dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels
-from cpc.criterion.research import CPCBertCriterion, DeepEmbeddedClustering, \
-    DeepClustering, CTCCLustering, buildNewPhoneDict
-from cpc.distributed_training.distributed_mode import init_distributed_mode
 
 
 def getCriterion(args, downsampling, nSpeakers, nPhones):
     dimFeatures = args.hiddenGar if not args.onEncoder else args.hiddenEncoder
     if not args.supervised:
-        if args.cpc_mode == "bert":
-            cpcCriterion = CPCBertCriterion(args.hiddenGar,
-                                            args.hiddenEncoder,
-                                            args.negativeSamplingExt)
-        elif args.cpc_mode == 'none':
+        if args.cpc_mode == 'none':
             cpcCriterion = cr.NoneCriterion()
-            args.cluster_delay = 0
         else:
-            mode = "cumNorm" if args.normMode == "cumNorm" else args.cpc_mode
             sizeInputSeq = (args.sizeWindow // downsampling)
             cpcCriterion = cr.CPCUnsupersivedCriterion(args.nPredicts,
                                                        args.hiddenGar,
                                                        args.hiddenEncoder,
                                                        args.negativeSamplingExt,
-                                                       mode=mode,
+                                                       mode=args.cpc_mode,
                                                        rnnMode=args.rnnMode,
                                                        dropout=args.dropout,
                                                        nSpeakers=nSpeakers,
@@ -70,96 +61,11 @@ def loadCriterion(pathCheckpoint, downsampling, nSpeakers, nPhones):
     return criterion
 
 
-def adversarialTrainStep(dataLoader, model,
-                         cpcCriterion, optimizerCPC,
-                         speakerCriterion, optimizerPhone,
-                         clustering, loggingStep):
-
-    model.train()
-    speakerCriterion.train()
-    cpcCriterion.train()
-    start_time = time.perf_counter()
-
-    logs = {"loss_train_speak": 0, "acc_train_speak": 0}
-    iter, lastlogs, n_examples = 0, None, 0
-    for step, fulldata in enumerate(dataLoader):
-
-        optimizerCPC.zero_grad()
-        optimizerPhone.zero_grad()
-
-        batchData, labelSpeaker, labelPhone = fulldata
-        batchData = batchData.cuda(non_blocking=True)
-        labelSpeaker = labelSpeaker.cuda(non_blocking=True)
-        labelPhone = labelPhone.cuda(non_blocking=True)
-        cFeature, encodedData, labelSpeaker = model(batchData, labelSpeaker)
-
-        allLosses, allAcc = cpcCriterion(cFeature, encodedData, labelSpeaker)
-        lossSpeak, _ = speakerCriterion(cFeature, encodedData, None)
-        totLoss = allLosses.sum() + lossSpeak.sum()
-
-        if clustering is not None:
-            lossCluster = clustering(cFeature, labelPhone)
-            totLoss += lossCluster.sum()
-
-        n_examples += batchData.size(0)
-
-        if "locLoss_train_cpc" not in logs:
-            logs["locLoss_train_cpc"] = np.zeros(allLosses.size(1))
-            logs["locAcc_train_cpc"] = np.zeros(allLosses.size(1))
-            if clustering is not None:
-                logs["lossCluster_train"] = np.zeros(lossCluster.size(1))
-
-        logs["loss_train_speak"] += (lossSpeak.mean(dim=0).view(1)
-                                     ).detach().cpu().numpy()
-
-        logs["locLoss_train_cpc"] += (allLosses.mean(dim=0)
-                                      ).detach().cpu().numpy()
-        if clustering is not None:
-            logs["lossCluster_train"] += (lossCluster.mean(dim=0)
-                                          ).detach().cpu().numpy()
-        logs["locAcc_train_cpc"] += (allAcc.mean(dim=0)).cpu().numpy()
-
-        if clustering is not None:
-            totLoss += lossCluster.sum()
-        totLoss.backward()
-        optimizerCPC.step()
-        optimizerPhone.zero_grad()
-
-        lossSpeak, accSpeak = speakerCriterion(
-            cFeature.detach(), encodedData.detach(), labelSpeaker)
-
-        totLoss = lossSpeak.sum()
-        totLoss.backward()
-        optimizerPhone.step()
-
-        logs["acc_train_speak"] += (accSpeak.mean(dim=0)).cpu().numpy()
-        iter += 1
-
-        if (step + 1) % loggingStep == 0:
-            new_time = time.perf_counter()
-            elapsed = new_time - start_time
-            print(f"Update {step + 1}")
-            print(f"elapsed: {elapsed:.1f} s")
-            print(
-                f"{1000.0 * elapsed / loggingStep:.1f} ms per batch, {1000.0 * elapsed / n_examples:.1f} ms / example")
-            locLogs = utils.update_logs(logs, loggingStep, lastlogs)
-            lastlogs = deepcopy(logs)
-            utils.show_logs("Training loss", locLogs)
-            start_time, n_examples = new_time, 0
-
-    logs = utils.update_logs(logs, iter)
-    logs["iter"] = iter
-    utils.show_logs(
-        f"Average training loss on epoch ({iter+1} updates) :", logs)
-    return logs
-
-
 def trainStep(dataLoader,
               cpcModel,
               cpcCriterion,
               optimizer,
               scheduler,
-              clustering,
               loggingStep):
 
     cpcModel.train()
@@ -178,10 +84,6 @@ def trainStep(dataLoader,
         allLosses, allAcc = cpcCriterion(c_feature, encoded_data, label)
         totLoss = allLosses.sum()
 
-        if clustering is not None:
-            lossCluster = clustering(c_feature, label)
-            totLoss += lossCluster.sum()
-
         totLoss.backward()
 
         # Show grads ?
@@ -191,15 +93,11 @@ def trainStep(dataLoader,
         if "locLoss_train" not in logs:
             logs["locLoss_train"] = np.zeros(allLosses.size(1))
             logs["locAcc_train"] = np.zeros(allLosses.size(1))
-            if clustering is not None:
-                logs["lossCluster_train"] = np.zeros(lossCluster.size(1))
 
         iter += 1
         logs["locLoss_train"] += (allLosses.mean(dim=0)).detach().cpu().numpy()
         logs["locAcc_train"] += (allAcc.mean(dim=0)).cpu().numpy()
-        if clustering is not None:
-            logs["lossCluster_train"] += (lossCluster.mean(dim=0)
-                                          ).detach().cpu().numpy()
+
         if (step + 1) % loggingStep == 0:
             new_time = time.perf_counter()
             elapsed = new_time - start_time
@@ -223,8 +121,7 @@ def trainStep(dataLoader,
 
 def valStep(dataLoader,
             cpcModel,
-            cpcCriterion,
-            clustering):
+            cpcCriterion):
 
     cpcCriterion.eval()
     cpcModel.eval()
@@ -243,20 +140,13 @@ def valStep(dataLoader,
         with torch.no_grad():
             c_feature, encoded_data, label = cpcModel(batchData, label)
             allLosses, allAcc = cpcCriterion(c_feature, encoded_data, label)
-            if clustering is not None:
-                lossCluster = clustering(c_feature, label)
 
         if "locLoss_val" not in logs:
             logs["locLoss_val"] = np.zeros(allLosses.size(1))
             logs["locAcc_val"] = np.zeros(allLosses.size(1))
-            if clustering is not None:
-                logs["lossCluster_val"] = np.zeros(lossCluster.size(1))
 
         iter += 1
         logs["locLoss_val"] += allLosses.mean(dim=0).cpu().numpy()
-        if clustering is not None:
-            logs["lossCluster_val"] += (lossCluster.mean(dim=0)
-                                        ).detach().cpu().numpy()
         logs["locAcc_val"] += allAcc.mean(dim=0).cpu().numpy()
 
     logs = utils.update_logs(logs, iter)
@@ -275,9 +165,7 @@ def run(trainDataset,
         pathCheckpoint,
         optimizer,
         scheduler,
-        logs,
-        adversarial,
-        clustering):
+        logs):
 
     print(f"Running {nEpoch} epochs")
     startEpoch = len(logs["epoch"])
@@ -285,35 +173,10 @@ def run(trainDataset,
     bestStateDict = None
     start_time = time.time()
 
-    if adversarial is not None:
-        optimAdv = torch.optim.Adam(list(adversarial.parameters()), lr=2e-4)
-
     for epoch in range(startEpoch, nEpoch):
 
         print(f"Starting epoch {epoch}")
         utils.cpu_stats()
-
-        if clustering is not None:
-            cpcModel.eval()
-            trainDataset.doubleLabels = False
-            clustering.module.updateCLusters(trainDataset.getDataLoader(batchSize, 'uniform',
-                                                                        True, numWorkers=0),
-                                             fl.FeatureModule(cpcModel.module, False))
-            if clustering.module.canRun():
-                for dataset, status in [(trainDataset, 'train'), (valDataset, 'val')]:
-                    phoneLabels, phoneFill = \
-                        buildNewPhoneDict(dataset.dbPath,
-                                          dataset.getSeqNames(),
-                                          cpcModel.module,
-                                          clustering.module.clusters,
-                                          clustering.module.k)
-                    dataset.resetPhoneLabels(phoneLabels, 160)
-                    fillingStatus = (phoneFill == 0).sum().item()
-                    print(
-                        f"{fillingStatus} clusters empty out of {clustering.module.k}")
-
-        if adversarial is not None:
-            trainDataset.doubleLabels = True
 
         trainLoader = trainDataset.getDataLoader(batchSize, samplingMode,
                                                  True, numWorkers=0)
@@ -324,18 +187,10 @@ def run(trainDataset,
         print("Training dataset %d batches, Validation dataset %d batches, batch size %d" %
               (len(trainLoader), len(valLoader), batchSize))
 
-        if adversarial is not None:
-            locLogsTrain = adversarialTrainStep(trainLoader, cpcModel,
-                                                cpcCriterion,
-                                                optimizer, adversarial,
-                                                optimAdv, clustering,
-                                                logs["logging_step"])
-        else:
-            locLogsTrain = trainStep(
-                trainLoader, cpcModel, cpcCriterion, optimizer,
-                scheduler, clustering, logs["logging_step"])
+        locLogsTrain = trainStep(trainLoader, cpcModel, cpcCriterion,
+                                 optimizer, scheduler, logs["logging_step"])
 
-        locLogsVal = valStep(valLoader, cpcModel, cpcCriterion, clustering)
+        locLogsVal = valStep(valLoader, cpcModel, cpcCriterion)
 
         print(f'Ran {epoch + 1} epochs '
               f'in {time.time() - start_time:.2f} seconds')
@@ -369,11 +224,6 @@ def run(trainDataset,
 
 def main(args):
     args = parseArgs(args)
-    if args.distributed:
-        print('Distributed mode, moving to 1 process for data loading')
-        args.n_process_loader = 1
-        init_distributed_mode(args)
-    args.is_local_master = (not args.distributed) or (args.global_rank == 0)
 
     utils.set_seed(args.random_seed)
     logs = {"epoch": [], "iter": [], "saveStep": args.save_step}
@@ -385,8 +235,7 @@ def main(args):
             print(f"Checkpoint detected at {data}")
             fl.loadArgs(args, locArgs,
                         forbiddenAttr={"nGPU", "pathCheckpoint",
-                                       "debug", "restart", "local_rank",
-                                       "global_rank", "world_size",
+                                       "debug", "restart", "world_size",
                                        "n_nodes", "node_id", "n_gpu_per_node",
                                        "max_size_loaded"})
             args.load, loadOptimizer = [data], True
@@ -426,18 +275,6 @@ def main(args):
         phoneLabels, nPhones = parseSeqLabels(args.pathPhone)
         print(f"{nPhones} phones found")
 
-    if args.distributed:
-        def filter_distributed(files):
-            start = len(files) * args.global_rank // args.world_size
-            end = len(files) * (args.global_rank + 1) // args.world_size
-            return files[start:end]
-        print(
-            f'Initial worker files: {len(seqTrain)} train, {len(seqVal)} val')
-        seqTrain = filter_distributed(seqTrain)
-        seqVal = filter_distributed(seqVal)
-        print(
-            f'Current worker files: {len(seqTrain)} train, {len(seqVal)} val')
-
     print("")
     print(f'Loading audio data at {args.pathDB}')
     print("Loading the training dataset")
@@ -471,12 +308,7 @@ def main(args):
         # AR Network
         arNet = fl.getAR(args)
 
-        if args.cpc_mode == "bert":
-            cpcModel = model.CPCBertModel(encoderNet, arNet,
-                                          blockSize=args.nPredicts)
-            cpcModel.supervised = args.supervised
-        else:
-            cpcModel = model.CPCModel(encoderNet, arNet)
+        cpcModel = model.CPCModel(encoderNet, arNet)
 
     batchSize = args.nGPU * args.batchSizeGPU
     cpcModel.supervised = args.supervised
@@ -499,29 +331,6 @@ def main(args):
     # Optimizer
     g_params = list(cpcCriterion.parameters()) + list(cpcModel.parameters())
 
-    clustering = None
-    if args.clustering is not None:
-        if args.clustering == 'deepClustering':
-            clustering = DeepClustering(args.n_clusters, args.hiddenGar,
-                                        args.cluster_delay,
-                                        args.cluster_iter,
-                                        args.clustering_update).cuda()
-            g_params += list(clustering.parameters())
-        elif args.clustering == 'deepEmbedded':
-            clustering = DeepEmbeddedClustering(args.learningRate,
-                                                args.n_clusters,
-                                                args.hiddenGar,
-                                                args.cluster_delay,
-                                                args.cluster_iter,
-                                                args.clustering_update).cuda()
-        elif args.clustering == 'CTCClustering':
-            clustering = CTCCLustering(args.n_clusters, args.hiddenGar,
-                                       args.cluster_delay,
-                                       args.cluster_iter,
-                                       args.clustering_update).cuda()
-        clustering = torch.nn.DataParallel(clustering,
-                                           device_ids=range(args.nGPU))
-
     lr = args.learningRate
     optimizer = torch.optim.Adam(g_params, lr=lr,
                                  betas=(args.beta1, args.beta2),
@@ -538,9 +347,6 @@ def main(args):
         if not os.path.isdir(args.pathCheckpoint):
             os.mkdir(args.pathCheckpoint)
         args.pathCheckpoint = os.path.join(args.pathCheckpoint, "checkpoint")
-        if args.is_local_master:
-            with open(args.pathCheckpoint + "_args.json", 'w') as file:
-                json.dump(vars(args), file, indent=2)
 
     scheduler = None
     if args.schedulerStep > 0:
@@ -563,25 +369,10 @@ def main(args):
         for i in range(len(logs["epoch"])):
             scheduler.step()
 
-    print('args.local_rank: ' + str(args.local_rank))
-    if args.distributed:
-        cpcModel = torch.nn.parallel.DistributedDataParallel(cpcModel, device_ids=[
-                                                             args.local_rank], output_device=args.local_rank, broadcast_buffers=True)
-        cpcCriterion = torch.nn.parallel.DistributedDataParallel(cpcCriterion, device_ids=[
-                                                                 args.local_rank], output_device=args.local_rank, broadcast_buffers=True)
-    else:
-        cpcModel = torch.nn.DataParallel(cpcModel,
+    cpcModel = torch.nn.DataParallel(cpcModel,
+                                     device_ids=range(args.nGPU)).cuda()
+    cpcCriterion = torch.nn.DataParallel(cpcCriterion,
                                          device_ids=range(args.nGPU)).cuda()
-        cpcCriterion = torch.nn.DataParallel(cpcCriterion,
-                                             device_ids=range(args.nGPU)).cuda()
-
-    adversarial = None
-    if args.adversarial:
-        adversarial = cr.AdvSpeakerCriterion(args.hiddenGar,
-                                             len(speakers), args.onEncoder)
-        adversarial = torch.nn.DataParallel(adversarial,
-                                            device_ids=range(args.nGPU))
-        adversarial.cuda()
 
     run(trainDataset,
         valDataset,
@@ -590,12 +381,10 @@ def main(args):
         cpcModel,
         cpcCriterion,
         args.nEpoch,
-        args.pathCheckpoint if args.is_local_master else None,
+        args.pathCheckpoint,
         optimizer,
         scheduler,
-        logs,
-        adversarial,
-        clustering)
+        logs)
 
 
 def parseArgs(argv):
@@ -670,14 +459,6 @@ def parseArgs(argv):
     parser.add_argument('--debug', action='store_true',
                         help="Load only a very small amount of files for "
                         "debugging purposes.")
-
-    group_distrubed = parser.add_argument_group(
-        'Distributed training (FAIR only)')
-    group_distrubed.add_argument('--distributed', action='store_true')
-    group_distrubed.add_argument("--local_rank", type=int, default=-1,
-                                 help="Multi-GPU - Local rank")
-    group_distrubed.add_argument("--master_port", type=int, default=-1,
-                                 help="Master port (for multi-node SLURM jobs)")
     args = parser.parse_args(argv)
 
     if args.pathDB is None and (args.pathCheckpoint is None or args.restart):
