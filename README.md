@@ -132,3 +132,7 @@ where `cpc/utils/small_grid.json` is a json file defining grid (as in [example](
 The resulting models and stdout/stderr streams of the runs would appear in `~/cpc/<name>/<data-time>/`.
 
 You can use the `--dry_run` parameter which prevents the jobs from being actually launched.
+
+## License
+
+CPC_audio is MIT licensed, as found in the LICENSE file.
