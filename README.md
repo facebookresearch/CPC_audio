@@ -5,7 +5,7 @@
 The installation is a tiny bit involved due to the torch-audio dependency.
 
 0/ Clone the repo:
-`git clone git@github.com:facebookresearch/CPC_torch.git && cd CPC_torch`
+`git clone git@github.com:facebookresearch/CPC_audio.git && cd CPC_audio`
 
 1/ Install libraries which would be required for torch-audio https://github.com/pytorch/audio :
  * MacOS: `brew install sox`
@@ -54,7 +54,7 @@ PATH_AUDIO_FILES
           │   seq_22.{$EXTENSION}
 ```
 
-Please note that each speaker directory can contain an arbitrary number of subdirectories: the speaker label will always be retrieved from the top one.
+Please note that each speaker directory can contain an arbitrary number of subdirectories: the speaker label will always be retrieved from the top one. The name of the files isn't relevant. For a concrete example, you can look at the organization of the [Librispeech](http://www.openslr.org/12/) dataset.
 
 - $PATH_CHECKPOINT_DIR in the directory where the checkpoints will be saved
 - $TRAINING_SET is a path to a .txt file containing the list of the training sequences (see [here](https://drive.google.com/drive/folders/1BhJ2umKH3whguxMwifaKtSra0TgAbtfb) for example)
