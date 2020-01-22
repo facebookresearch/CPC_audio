@@ -138,6 +138,7 @@ Where:
 - --strict forces each batch of features to contain exactly the same number of frames.
 
 ### Cross lingual transfer
+
 To begin download the common voices datasets [here](https://voice.mozilla.org/en/datasets), you will also need to download our phonem annotations and our train / val / test splits for each language [here](https://dl.fbaipublicfiles.com/cpc_audio/common_voices_splits.tar.gz). Then unzip your data at PATH_COMMON_VOICES.
 Unfortunately, the audio files in common voices don't have the same sampling rate as in Librispeech. Thus you'll need to convert them into 16kH audio using the command:
 
