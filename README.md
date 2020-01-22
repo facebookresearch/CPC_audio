@@ -138,6 +138,40 @@ Where:
 - --strict forces each batch of features to contain exactly the same number of frames.
 
 ### Cross lingual transfer
+To begin download the common voices datasets [here](https://voice.mozilla.org/en/datasets), you will also need to download our phonem annotations and our train / val / test splits for each language [here](https://dl.fbaipublicfiles.com/cpc_audio/common_voices_splits.tar.gz). Then unzip your data at PATH_COMMON_VOICES.
+Unfortunately, the audio files in common voices don't have the same sampling rate as in Librispeech. Thus you'll need to convert them into 16kH audio using the command:
+
+```bash
+DIR_CC=$PATH_COMMON_VOICES
+for x in fr zh it ru nl sv es tr tt ky; do python cpc/eval/utils/adjust_sample_rate.py ${DIR_CC}/${x}/clips ${DIR_CC}/${x}/validated_phones_reduced.txt ${DIR_CC}/${x}/clips_16k; done
+```
+
+You can now run the experiments described in the paper. To begin, you must train the linear classifier. You will find below the instructions for the Spanish dataset: you can run the experiments on any other dataset in the same fashion.
+
+#### Frozen features
+
+To run the training on frozen features with the one hour dataset, just run:
+
+```bash
+python cpc/eval/common_voices_eval.py train $PATH_COMMON_VOICES/es/clips_16k $PATH_COMMON_VOICES/es/validated_phones_reduced.txt $CHECKPOINT_TO_TEST --pathTrain $PATH_COMMON_VOICES/es/trainSeqs_1.0_uniform_new_version.txt  --pathVal $PATH_COMMON_VOICES/es/trainSeqs_1.0_uniform_new_version.txt --freeze -o $OUTPUT_DIR
+```
+
+#### Fine tuning
+
+The command is quite similar to run the fine-tuning experiments on the 5 hours dataset. For example in French you need to run:
+```bash
+python cpc/eval/common_voices_eval.py train $PATH_COMMON_VOICES/es/clips_16k $PATH_COMMON_VOICES/es/validated_phones_reduced.txt $CHECKPOINT_TO_TEST --pathTrain $PATH_COMMON_VOICES/es/trainSeqs_5.0_uniform_new_version.txt --pathVal $PATH_COMMON_VOICES/es/trainSeqs_5.0_uniform_new_version.txt --freeze -o $OUTPUT_DIR
+```
+
+#### PER
+
+Once the training is done, you can compute the associated phone error rate (PER) on the test subset. To do so, just run:
+
+```bash
+python cpc/eval/common_voices_eval.py per $OUTPUT_DIR --pathVal $PATH_COMMON_VOICES/es/testSeqs_uniform_new_version.txt --pathPhone $PATH_COMMON_VOICES/es/validated_phones_reduced.txt
+```
+
+## torch hub
 
 To begin download the common voices datasets [here](https://voice.mozilla.org/en/datasets), you will also need to download our phonem annotations and our train / val / test splits for each language [here](https://dl.fbaipublicfiles.com/cpc_audio/common_voices_splits.tar.gz). Then unzip your data at PATH_COMMON_VOICES.
 Unfortunately, the audio files in common voices don't have the same sampling rate as in Librispeech. Thus you'll need to convert them into 16kH audio using the command:
