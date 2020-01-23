@@ -2,34 +2,21 @@
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
-from model import CPCBertModel as cpcbert
-from model import CPCModel as cpcmodel
 import argparse
-from cpc_default_config import get_default_cpc_config
-from feature_loader import getEncoder, getAR, loadArgs
-dependencies = ['torch']
+import torch
+from cpc.model import CPCModel as cpcmodel
+from cpc.cpc_default_config import get_default_cpc_config
+from cpc.feature_loader import getEncoder, getAR, loadArgs
+dependencies = ['torch', 'torchaudio']
 
 
-def CPCModel(pretrained=False, *args, **kwargs):
+def CPC_audio(pretrained=False,
+              **kwargs):
     """
-    Progressive growing model
-    pretrained (bool): load a pretrained model ?
-    encoder_type (string):
-        -- "CPC" (default), "MFCC" or "LFB"
-    arMode (string):
-        -- "GRU" (default), "LSTM", "RNN"
-    hiddenEncoder (int): size of hidden encoder layer
-    normMode (string): defines the normalization layer in CPC
-        -- "batchNorm" (default), "instanceNorm", "ID" or "layerNorm"
-    sizeWindow (int): Expected size of the input sequence of the
-        AR transformer *160
-    abspos (bool)
-    samplingType (string):
-        -- "sequential" or "samespeaker"
-    hiddenGar (int): dimension of encoding GRU layer
-    nLevelsGRU (int): number of layers of the CPCAR network
-    cpc_mode (string):
-        -- "normal" (default), "bert", "reverse"
+    Contrast predictive learning model for audio data
+    pretrained: if True, load a model trained on libri-light 60k
+    (https://arxiv.org/abs/1912.07875)
+    **kwargs : see cpc/cpc_default_config to get the list of possible arguments
     """
     locArgs = get_default_cpc_config()
     if pretrained:
@@ -42,11 +29,7 @@ def CPCModel(pretrained=False, *args, **kwargs):
         loadArgs(locArgs, args)
     encoderNet = getEncoder(locArgs)
     arNet = getAR(locArgs)
-    if locArgs.cpc_mode == "bert":
-        model = cpcbert(encoderNet, arNet, blockSize=locArgs.nPredicts)
-        model.supervised = locArgs.supervised
-    else:
-        model = cpcmodel(encoderNet, arNet)
+    model = cpcmodel(encoderNet, arNet)
     if pretrained:
         model.load_state_dict(checkpoint["weights"], strict=False)
     return model

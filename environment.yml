@@ -13,6 +13,8 @@ dependencies:
   - openblas-devel
   - tqdm
   - nose
+  - cython
+  - pysoundfile
   - pip:
     - progressbar2
     - matplotlib

@@ -7,6 +7,7 @@ import random
 import time
 import tqdm
 import torch
+import soundfile as sf
 from pathlib import Path
 from copy import deepcopy
 from torch.multiprocessing import Pool
@@ -257,7 +258,11 @@ class AudioBatchData(Dataset):
 def loadFile(data):
     speaker, fullPath = data
     seqName = fullPath.stem
-    seq = torchaudio.load(fullPath)[0].view(-1)
+    # Due to some issues happening when combining torchaudio.load
+    # with torch.multiprocessing we use soundfile to load the data
+    seq = torch.tensor(sf.read(fullPath)[0]).float()
+    if len(seq.size()) == 2:
+        seq = seq.mean(dim=1)
     return speaker, seqName, seq
 
 

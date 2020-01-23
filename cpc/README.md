@@ -2,7 +2,7 @@
 
 train.py : main script
 
-dataset.py : defintion of the Librispeech dataset
+dataset.py : defintion of the Librispeech dataset format
 
 model.py : Basic encoders and AR models
 
