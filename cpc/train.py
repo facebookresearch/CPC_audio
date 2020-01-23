@@ -218,7 +218,7 @@ def run(trainDataset,
 
             fl.save_checkpoint(modelStateDict, criterionStateDict,
                                optimizer.state_dict(), bestStateDict,
-                               f"{path_checkpoint}_{epoch}.pt")
+                               f"{pathCheckpoint}_{epoch}.pt")
             utils.save_logs(logs, pathCheckpoint + "_logs.json")
 
 
