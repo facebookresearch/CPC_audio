@@ -1,6 +1,6 @@
 # CPC_audio
 
-This code implements the Contrast Predictive Coding algorithm on audio data, as described in the paper [Unsupervised Pretraining Transfers well Across Languages](FILLME). This is an unsupervised method to train audio features directly from the raw waveform.
+This code implements the Contrast Predictive Coding algorithm on audio data, as described in the paper [Unsupervised Pretraining Transfers well Across Languages](https://arxiv.org/abs/2002.02848). This is an unsupervised method to train audio features directly from the raw waveform.
 
 Moreover, this code also implements all the evaluation metrics used in the paper:
 - [ABX discriminability](https://zerospeech.com/2017/track_1.html)
@@ -191,6 +191,20 @@ where `cpc/utils/small_grid.json` is a json file defining grid (as in [example](
 The resulting models and stdout/stderr streams of the runs would appear in `~/cpc/<name>/<data-time>/`.
 
 You can use the `--dry_run` parameter which prevents the jobs from being actually launched.
+
+## Citations
+Please consider citing this project in your publications if it helps your research.
+
+```
+@misc{rivire2020unsupervised,
+    title={Unsupervised pretraining transfers well across languages},
+    author={Morgane Rivière and Armand Joulin and Pierre-Emmanuel Mazaré and Emmanuel Dupoux},
+    year={2020},
+    eprint={2002.02848},
+    archivePrefix={arXiv},
+    primaryClass={eess.AS}
+}
+```
 
 ## License
 
