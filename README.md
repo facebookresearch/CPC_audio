@@ -1,6 +1,6 @@
 # CPC_audio
 
-This code implements the Contrast Predictive Coding algorithm on audio data, as described in the paper [Unsupervised Pretraining Transfers well Across Languages](FILLME). This is an unsupervised method to train audio features directly from the raw waveform.
+This code implements the Contrast Predictive Coding algorithm on audio data, as described in the paper [Unsupervised Pretraining Transfers well Across Languages](https://arxiv.org/abs/2002.02848). This is an unsupervised method to train audio features directly from the raw waveform.
 
 Moreover, this code also implements all the evaluation metrics used in the paper:
 - [ABX discriminability](https://zerospeech.com/2017/track_1.html)
@@ -211,6 +211,19 @@ python cpc/eval/common_voices_eval.py per $OUTPUT_DIR --pathVal $PATH_COMMON_VOI
 
 This model is also available via [torch.hub](https://pytorch.org/docs/stable/hub.html). For more details, have a look at hubconf.py.
 
+## Citations
+Please consider citing this project in your publications if it helps your research.
+
+```
+@misc{rivire2020unsupervised,
+    title={Unsupervised pretraining transfers well across languages},
+    author={Morgane Rivière and Armand Joulin and Pierre-Emmanuel Mazaré and Emmanuel Dupoux},
+    year={2020},
+    eprint={2002.02848},
+    archivePrefix={arXiv},
+    primaryClass={eess.AS}
+}
+```
 
 ## License
 
