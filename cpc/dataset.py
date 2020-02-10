@@ -110,6 +110,7 @@ class AudioBatchData(Dataset):
         print(f"Done, elapsed: {time.time() - start_time:.3f} seconds")
         print(f'Scanned {len(self.seqNames)} sequences '
               f'in {time.time() - start_time:.2f} seconds')
+        print(f"{len(self.packageIndex)} chunks computed")
         self.currentPack = -1
         self.nextPack = 0
 
@@ -129,6 +130,8 @@ class AudioBatchData(Dataset):
             del self.nextData
         self.nextPack = (self.currentPack + 1) % len(self.packageIndex)
         seqStart, seqEnd = self.packageIndex[self.nextPack]
+        if self.nextPack == 0 and len(self.packageIndex) > 1:
+            self.prepare()
         self.r = self.reload_pool.map_async(loadFile,
                                             self.seqNames[seqStart:seqEnd])
 
