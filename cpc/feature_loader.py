@@ -236,6 +236,8 @@ def get_module(i_module):
         return get_module(i_module.module)
     if isinstance(i_module, FeatureModule):
         return get_module(i_module.module)
+    if isinstance(i_module, torch.nn.parallel.DistributedDataParallel):
+        return get_module(i_module.module)
     return i_module
 
 
