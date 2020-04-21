@@ -15,7 +15,7 @@ def normalize_with_singularity(x):
     cosine distance from any non-null vector.
     """
     N, S, H = x.size()
-    norm_x = (x**2).sum(dim=2, keepdim=True)
+    norm_x = (x**2).sum(dim=2, keepdim=True) + 1e-12
 
     x /= torch.sqrt(norm_x)
     zero_vals = (norm_x == 0).view(N, S)
@@ -238,11 +238,11 @@ class ABXFeatureLoader:
     def get_n_sub_group(self, index_sub_group):
         return len(self.group_index[index_sub_group])
 
-    def get_iterator(self, mode, max_size_group):
+    def get_iterator(self, mode, max_size_group, max_x_across=5):
         if mode == 'within':
             return ABXWithinGroupIterator(self, max_size_group)
         if mode == 'across':
-            return ABXAcrossGroupIterator(self, max_size_group)
+            return ABXAcrossGroupIterator(self, max_size_group, max_x_across)
         raise ValueError(f"Invalid mode: {mode}")
 
 
@@ -353,14 +353,13 @@ class ABXAcrossGroupIterator(ABXIterator):
     r"""
     Iterator giving the triplets for the ABX across score.
     """
-
-    def __init__(self, abxDataset, max_size_group):
+    def __init__(self, abxDataset, max_size_group, max_x_across):
 
         super(ABXAcrossGroupIterator, self).__init__(abxDataset,
                                                      max_size_group)
         self.symmetric = False
         self.get_speakers_from_cp = {}
-        self.max_x = 5
+        self.max_x = max_x_across
 
         for context_group in self.groups_csp:
             for speaker_group in context_group:

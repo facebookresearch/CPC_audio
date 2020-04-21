@@ -23,7 +23,6 @@ def ABX(feature_function,
         distance_mode,
         step_feature,
         modes,
-        seq_norm=True,
         cuda=False,
         max_x_across=5,
         max_size_group=30):
@@ -70,8 +69,8 @@ def ABX(feature_function,
     # ABX across
     if 'across' in modes:
         print("Computing ABX across speakers...")
-        ABXIterator = ABXDataset.get_iterator('across', max_size_group)
-        ABXIterator.max_x = max_x_across
+        ABXIterator = ABXDataset.get_iterator('across', max_size_group, max_x_across=max_x_across)
+
         group_confusion = abx_g.get_abx_scores_dtw_on_group(ABXIterator,
                                                             distance_function,
                                                             ABXIterator.symmetric)
@@ -80,18 +79,20 @@ def ABX(feature_function,
                                          torch.ones((n_data),
                                                     dtype=torch.float),
                                          group_confusion.size())
-        divisor_context = torch.sparse.sum(index_, dim=[3, 4]).to_dense()
-        group_confusion = torch.sparse.sum(
-            group_confusion, dim=[3, 4]).to_dense()
-        group_confusion = reduce_sparse_data(group_confusion, divisor_context)
-        S, p1, p2 = group_confusion.size()
 
+        divisor_context = torch.sparse.sum(index_, dim=[3]).to_dense()
+        group_confusion = torch.sparse.sum(
+             group_confusion, dim=[3]).to_dense()
+        group_confusion = reduce_sparse_data(group_confusion, divisor_context)
+
+        S1, p1, p2, S2 = group_confusion.size()
         index_speaker = divisor_context > 0
-        divisor_speaker = index_speaker.sum(dim=0)
-        phone_confusion = reduce_sparse_data(group_confusion.sum(dim=0),
+        divisor_speaker = index_speaker.sum(dim=0).sum(dim=2)
+        phone_confusion = reduce_sparse_data(group_confusion.sum(dim=0).sum(dim=2),
                                              divisor_speaker)
         scores['across'] = (phone_confusion.sum() /
-                            (divisor_speaker > 0).sum()).item()
+                             (divisor_speaker > 0).sum()).item()
+
         print(f"...done. ABX across : {scores['across']}")
 
     return scores
@@ -99,14 +100,14 @@ def ABX(feature_function,
 
 def update_base_parser(parser):
     parser.add_argument('--debug', action='store_true')
-    parser.add_argument('--feature_size', type=int, default=0.01,
+    parser.add_argument('--feature_size', type=float, default=0.01,
                         help="Size (in s) of one feature")
     parser.add_argument('--cuda', action='store_true',
                         help="Use the GPU to compute distances")
     parser.add_argument('--mode', type=str, default='all',
                         choices=['all', 'within', 'across'],
                         help="Type of ABX score to compute")
-    parser.add_argument("--max_size_group", type=int, default=10,
+    parser.add_argument("--max_size_group", type=int, default=20,
                         help="Max size of a group while computing the"
                              "ABX score")
     parser.add_argument("--max_x_across", type=int, default=5,
@@ -162,6 +163,7 @@ def parse_args(argv):
 
 def main(argv):
 
+
     args = parse_args(argv)
 
     if args.load == 'from_checkpoint':
@@ -200,7 +202,6 @@ def main(argv):
                  seq_list, distance_mode,
                  step_feature, modes,
                  cuda=args.cuda,
-                 seq_norm=args.seq_norm,
                  max_x_across=args.max_x_across,
                  max_size_group=args.max_size_group)
 
