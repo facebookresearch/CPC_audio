@@ -377,21 +377,6 @@ def main(args):
 
     utils.set_seed(args.random_seed)
     logs = {"epoch": [], "iter": [], "saveStep": args.save_step}
-    loadOptimizer = False
-    if args.pathCheckpoint is not None and not args.restart:
-        cdata = fl.getCheckpointData(args.pathCheckpoint)
-        if cdata is not None:
-            data, logs, locArgs = cdata
-            print(f"Checkpoint detected at {data}")
-            fl.loadArgs(args, locArgs,
-                        forbiddenAttr={"nGPU", "pathCheckpoint",
-                                       "debug", "restart", "local_rank",
-                                       "global_rank", "world_size",
-                                       "n_nodes", "node_id", "n_gpu_per_node",
-                                       "max_size_loaded"})
-            args.load, loadOptimizer = [data], True
-            args.loadCriterion = True
-
     logs["logging_step"] = args.logging_step
 
     print(f'CONFIG:\n{json.dumps(vars(args), indent=4, sort_keys=True)}')
@@ -489,7 +474,7 @@ def main(args):
         cpcCriterion = getCriterion(args, cpcModel.gEncoder.DOWNSAMPLING,
                                     len(speakers), nPhones)
 
-    if loadOptimizer:
+    if args.load_optimizer:
         state_dict = torch.load(args.load[0], 'cpu')
         cpcCriterion.load_state_dict(state_dict["cpcCriterion"])
 
@@ -527,7 +512,7 @@ def main(args):
                                  betas=(args.beta1, args.beta2),
                                  eps=args.epsilon)
 
-    if loadOptimizer:
+    if args.load_optimizer:
         print("Loading optimizer " + args.load[0])
         state_dict = torch.load(args.load[0], 'cpu')
         if "optimizer" in state_dict:
@@ -679,6 +664,22 @@ def parseArgs(argv):
     group_distrubed.add_argument("--master_port", type=int, default=-1,
                                  help="Master port (for multi-node SLURM jobs)")
     args = parser.parse_args(argv)
+
+    args.load_optimizer = False
+    if args.pathCheckpoint is not None and not args.restart:
+        cdata = fl.getCheckpointData(args.pathCheckpoint)
+        if cdata is not None:
+            forbidden_attr = ["nGPU", "pathCheckpoint", "local_rank",
+                              "global_rank","node_id", "n_gpu_per_node"
+                              "debug", "restart", "world_size", "n_nodes"]
+            data, logs, locArgs = cdata
+            print(f"Checkpoint detected at {data}")
+            to_replace = { k : v for k, v in vars(locArgs).items() \
+                           if k not in forbidden_attr}
+            parser.set_defaults(**to_replace)
+            args = parser.parse_args(argv)
+            args.load, args.load_optimizer = [data], True
+            args.loadCriterion = True
 
     if args.pathDB is None and (args.pathCheckpoint is None or args.restart):
         parser.print_help()
