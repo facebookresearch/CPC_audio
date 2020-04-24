@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 import torch
 import math
+import concurrent.futures
 from . import dtw
 import progressbar
 
@@ -107,22 +108,42 @@ def loc_dtw(data, distance_function, symmetric):
     return (coords, 1 - theta)
 
 
-def get_abx_scores_dtw_on_group(group_iterator,
-                                distance_function,
-                                symmetric):
-
-    data_list = []
-    coords_list = []
+def worker(worker_rank: int, nprocess: int, group_iterator, distance_function, symmetric) -> list:
     bar = progressbar.ProgressBar(maxval=len(group_iterator))
-    bar.start()
-
+    if worker_rank == 0:
+        bar.start()
+    worker_data = []
     with torch.no_grad():
         for index, group in enumerate(group_iterator):
-            bar.update(index)
-            coords, abx = loc_dtw(group, distance_function, symmetric)
-            data_list.append(abx)
-            coords_list.append(coords)
-    bar.finish()
+            if index % nprocess != worker_rank:
+                continue
+            if worker_rank == 0:
+                bar.update(index)
+            worker_data.append((index, loc_dtw(group, distance_function, symmetric)))
+    if worker_rank == 0:
+        bar.finish()
+    if nprocess > 1 and worker_rank == 0:
+        print(f'Process {worker_rank} done. Waiting for others to finish...', flush=True)
+    return worker_data
+
+def get_abx_scores_dtw_on_group(group_iterator,
+                                distance_function,
+                                symmetric,
+                                nprocess: int = 40):
+    data_list = []
+    coords_list = []
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=nprocess) as p:
+        jobs = [p.submit(worker, worker_rank, nprocess, group_iterator, distance_function, symmetric) for worker_rank in range(nprocess)]
+        all_worker_data = []
+        for j in jobs:
+            all_worker_data += j.result()
+        if nprocess > 1:
+            print('All processes done')
+        all_worker_data.sort()
+        for _, coords_abx in all_worker_data:
+            data_list.append(coords_abx[1])
+            coords_list.append(coords_abx[0])
 
     return torch.sparse.FloatTensor(torch.LongTensor(coords_list).t(),
                                     torch.FloatTensor(data_list),

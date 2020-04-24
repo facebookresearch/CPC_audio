@@ -17,7 +17,8 @@ def reduce_sparse_data(quotient, divisor):
     return quotient / (1e-08 * (divisor == 0) + divisor)
 
 
-def ABX(feature_function,
+def ABX(args,
+        feature_function,
         path_item_file,
         seq_list,
         distance_mode,
@@ -46,7 +47,8 @@ def ABX(feature_function,
         ABXIterator = ABXDataset.get_iterator('within', max_size_group)
         group_confusion = abx_g.get_abx_scores_dtw_on_group(ABXIterator,
                                                             distance_function,
-                                                            ABXIterator.symmetric)
+                                                            ABXIterator.symmetric,
+                                                            nprocess=args.num_processes)
         n_data = group_confusion._values().size(0)
         index_ = torch.sparse.LongTensor(group_confusion._indices(),
                                          torch.ones((n_data),
@@ -73,7 +75,8 @@ def ABX(feature_function,
 
         group_confusion = abx_g.get_abx_scores_dtw_on_group(ABXIterator,
                                                             distance_function,
-                                                            ABXIterator.symmetric)
+                                                            ABXIterator.symmetric,
+                                                            nprocess=args.num_processes)
         n_data = group_confusion._values().size(0)
         index_ = torch.sparse.LongTensor(group_confusion._indices(),
                                          torch.ones((n_data),
@@ -148,6 +151,8 @@ def parse_args(argv):
     parser_checkpoint.add_argument('--get_encoded', action='store_true',
                                    help='If activated, compute the ABX score '
                                    'using the output of the encoder network.')
+    parser_checkpoint.add_argument('-n', '--num_processes', type=int, default=40,
+                                   help='Number of processes to use for group computation')
 
     parser_db = subparsers.add_parser('from_pre_computed')
     update_base_parser(parser_db)
@@ -198,7 +203,7 @@ def main(argv):
     if args.debug:
         seq_list = seq_list[:1000]
 
-    scores = ABX(feature_function, args.path_item_file,
+    scores = ABX(args, feature_function, args.path_item_file,
                  seq_list, distance_mode,
                  step_feature, modes,
                  cuda=args.cuda,
