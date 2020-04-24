@@ -106,5 +106,8 @@ def set_default_cpc_config(parser):
     group.add_argument('--clustering_update', type=str, default='kmean',
                        choices=['kmean', 'dpmean'],
                        help="(Clustering only) Clustering method to use.")
+    group.add_argument('--multihead_rnn', action='store_true',
+                       help="Use one rnn network with k classifiers on top "
+                       "of it instead of k independant rnn networks")
 
     return parser

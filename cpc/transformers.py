@@ -111,6 +111,28 @@ class TransformerLayer(nn.Module):
         return self.ln_ffnetwork(y + self.ffnetwork(y))
 
 
+class MultiClassifierTransformerHead(nn.Module):
+
+    def __init__(self, nclassifiers, sizeSeq=32, dmodel=512, dff=2048,
+                 dropout=0.1, nheads=8,
+                 abspos=False):
+        super(MultiClassifierTransformerHead, self).__init__()
+        self.multihead = MultiHeadAttention(sizeSeq, dropout,
+                                            dmodel, nheads, abspos)
+        self.ln_multihead = nn.LayerNorm(dmodel)
+        self.ffnetwork = FFNetwork(dmodel, dmodel * nclassifiers,dff,  dropout)
+        self.ln_ffnetwork = nn.LayerNorm(dmodel)
+        self.nclassifiers = nclassifiers
+        self.dout = dmodel
+
+    def forward(self, x):
+        y = self.ln_multihead(x + self.multihead(Q=x, K=x, V=x))
+        B, S, _ = y.size()
+        x = self.ffnetwork(y)
+        y = y.view(B, S, 1, self.dout).expand(B, S, self.nclassifiers, self.dout)
+        return self.ln_ffnetwork(x.view(B, S, self.nclassifiers, self.dout) + y)
+
+
 class StaticPositionEmbedding(nn.Module):
     def __init__(self, seqlen, dmodel):
         super(StaticPositionEmbedding, self).__init__()
@@ -136,4 +158,25 @@ def buildTransformerAR(dimEncoded,    # Output dimension of the encoder
     layerSequence += [TransformerLayer(sizeSeq=sizeSeq,
                                        dmodel=dimEncoded, abspos=abspos)
                       for i in range(nLayers)]
+    return nn.Sequential(*layerSequence)
+
+def buildMultHeadTransformerAR(dimEncoded,    # Output dimension of the encoder
+                               nLayers,       # Number of transformer layers
+                               sizeSeq,       # Expected size of the input sequence
+                               abspos,
+                               nHeads):
+
+    layerSequence = []
+    if abspos:
+        layerSequence += [StaticPositionEmbedding(sizeSeq, dimEncoded)]
+
+    layerSequence += [TransformerLayer(sizeSeq=sizeSeq,
+                                       dmodel=dimEncoded,
+                                       abspos=abspos)
+                      for i in range(nLayers - 1)]
+    layerSequence += [MultiClassifierTransformerHead(nHeads,
+                                                    dmodel=dimEncoded,
+                                                    sizeSeq=sizeSeq,
+                                                    abspos=abspos)]
+
     return nn.Sequential(*layerSequence)

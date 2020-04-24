@@ -41,6 +41,50 @@ class ShiftedConv(nn.Module):
         return x
 
 
+class MultiHeadPredictionNetwork(nn.Module):
+
+    def __init__(self,
+                 nPredicts,
+                 dimOutputAR,
+                 dimOutputEncoder,
+                 rnnMode= 'transformer_multi',
+                 dropout=False,
+                 sizeInputSeq=116,
+                 transformer_pruning=0):
+
+        super(MultiHeadPredictionNetwork, self).__init__()
+        self.dimOutputAR = dimOutputAR
+        self.dropout = nn.Dropout(p=0.5) if dropout else None
+        self.nPredicts = nPredicts
+
+        if rnnMode == 'transformer':
+            from cpc.transformers import buildMultHeadTransformerAR
+            if transformer_pruning > 0:
+                print(f"Activating {transformer_pruning} attention pruning")
+            self.predictor = buildMultHeadTransformerAR(dimOutputEncoder,
+                                                        nLayers=1,
+                                                        sizeSeq=sizeInputSeq,
+                                                        abspos=False,
+                                                        nHeads=nPredicts)
+        else:
+            raise ValueError(f"unknown mode {rnnMode}")
+
+    def forward(self, c, candidates):
+
+        assert(len(candidates) == self.nPredicts)
+        prediction = self.predictor(c)
+        out = []
+
+        for k in range(self.nPredicts):
+            locC = prediction[:, :, k]
+            if self.dropout is not None:
+                locC = self.dropout(locC)
+            locC = locC.view(locC.size(0), 1, locC.size(1), locC.size(2))
+            outK = (locC*candidates[k]).mean(dim=3)
+            out.append(outK)
+        return out
+
+
 class PredictionNetwork(nn.Module):
 
     def __init__(self,
@@ -49,7 +93,8 @@ class PredictionNetwork(nn.Module):
                  dimOutputEncoder,
                  rnnMode=None,
                  dropout=False,
-                 sizeInputSeq=116):
+                 sizeInputSeq=116,
+                 transformer_pruning=0):
 
         super(PredictionNetwork, self).__init__()
         self.predictors = nn.ModuleList()
@@ -80,12 +125,12 @@ class PredictionNetwork(nn.Module):
                 self.predictors.append(
                     ShiftedConv(dimOutputAR, dimOutputEncoder, 12))
             elif rnnMode == 'transformer':
-                from transformers import buildTransformerAR
+                from cpc.transformers import buildTransformerAR
                 self.predictors.append(
                     buildTransformerAR(dimOutputEncoder,
-                                       1,
-                                       sizeInputSeq,
-                                       False))
+                                       nLayers=1,
+                                       sizeSeq=sizeInputSeq,
+                                       abspos=False))
             else:
                 self.predictors.append(
                     nn.Linear(dimOutputAR, dimOutputEncoder, bias=False))
@@ -148,7 +193,9 @@ class CPCUnsupersivedCriterion(BaseCriterion):
                  dropout=False,
                  speakerEmbedding=0,
                  nSpeakers=0,
-                 sizeInputSeq=128):
+                 sizeInputSeq=116,
+                 multihead_rnn=False,
+                 transformer_pruning=0):
 
         super(CPCUnsupersivedCriterion, self).__init__()
         if speakerEmbedding > 0:
@@ -159,15 +206,24 @@ class CPCUnsupersivedCriterion(BaseCriterion):
         else:
             self.speakerEmb = None
 
-        self.wPrediction = PredictionNetwork(
-            nPredicts, dimOutputAR, dimOutputEncoder, rnnMode=rnnMode,
-            dropout=dropout, sizeInputSeq=sizeInputSeq - nPredicts)
+        if multihead_rnn:
+            print("Activating multi-head rnn")
+            self.wPrediction = MultiHeadPredictionNetwork(
+                nPredicts, dimOutputAR, dimOutputEncoder, rnnMode=rnnMode,
+                dropout=dropout, sizeInputSeq=sizeInputSeq - nPredicts,
+                transformer_pruning=transformer_pruning)
+        else:
+            self.wPrediction = PredictionNetwork(
+                nPredicts, dimOutputAR, dimOutputEncoder, rnnMode=rnnMode,
+                dropout=dropout, sizeInputSeq=sizeInputSeq - nPredicts,
+                transformer_pruning=transformer_pruning)
         self.nPredicts = nPredicts
         self.negativeSamplingExt = negativeSamplingExt
         self.lossCriterion = nn.CrossEntropyLoss()
 
         if mode not in [None, "reverse"]:
             raise ValueError("Invalid mode")
+
 
         self.mode = mode
 
@@ -219,10 +275,10 @@ class CPCUnsupersivedCriterion(BaseCriterion):
         return outputs, labelLoss
 
     def getInnerLoss(self):
-
         return "orthoLoss", self.orthoLoss * self.wPrediction.orthoCriterion()
 
-    def forward(self, cFeature, encodedData, label):
+
+    def getPrediction(self, cFeature, encodedData, label):
 
         if self.mode == "reverse":
             encodedData = torch.flip(encodedData, [1])
@@ -240,8 +296,41 @@ class CPCUnsupersivedCriterion(BaseCriterion):
             embeddedSpeaker = self.speakerEmb(l_)
             cFeature = torch.cat([cFeature, embeddedSpeaker], dim=2)
 
-        predictions = self.wPrediction(cFeature, sampledData)
+        return self.wPrediction(cFeature, sampledData), labelLoss
 
+
+    def getCosineDistances(self, cFeature, encodedData):
+
+        if self.mode == "reverse":
+            encodedData = torch.flip(encodedData, [1])
+            cFeature = torch.flip(cFeature, [1])
+
+        batchSize, seqSize, dimAR = cFeature.size()
+        _, size_encoded, dimEncoded = encodedData.size()
+        windowSize = seqSize - self.nPredicts
+
+        cFeature = cFeature[:, :windowSize]
+        out = []
+
+        for k in range(1, self.nPredicts + 1):
+            # Positive samples
+            if k < self.nPredicts:
+                posSeq = encodedData[:, k:-(self.nPredicts-k)]
+            else:
+                posSeq = encodedData[:, k:]
+
+            posSeq = posSeq.view(batchSize, 1, posSeq.size(1), dimEncoded)
+            out.append(posSeq)
+
+        return self.wPrediction(cFeature, out)
+
+
+
+    def forward(self, cFeature, encodedData, label):
+
+        batchSize, seqSize, _ = cFeature.size()
+        windowSize = seqSize - self.nPredicts
+        predictions, labelLoss = self.getPrediction(cFeature, encodedData, label)
         outLosses = [0 for x in range(self.nPredicts)]
         outAcc = [0 for x in range(self.nPredicts)]
 
