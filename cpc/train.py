@@ -368,8 +368,26 @@ def run(trainDataset,
             utils.save_logs(logs, pathCheckpoint + "_logs.json")
 
 
-def main(args):
-    args = parseArgs(args)
+def main(argv):
+    args = parseArgs(argv)
+
+    logs = {"epoch": [], "iter": [], "saveStep": args.save_step}
+    logs["logging_step"] = args.logging_step
+    load_optimizer = False
+    if args.pathCheckpoint is not None and not args.restart:
+        cdata = fl.getCheckpointData(args.pathCheckpoint)
+        if cdata is not None:
+            forbidden_attr = ["nGPU", "pathCheckpoint", "local_rank",
+                              "global_rank","node_id", "n_gpu_per_node"
+                              "debug", "restart", "world_size", "n_nodes"]
+            data, logs, locArgs = cdata
+            print(f"Checkpoint detected at {data}")
+            default_values = { k : v for k, v in vars(locArgs).items() \
+                           if k not in forbidden_attr}
+            args = parseArgs(argv, default_values)
+            args.load, load_optimizer = [data], True
+            args.loadCriterion = True
+
     if args.distributed:
         print('Distributed mode, moving to 1 process for data loading')
         args.n_process_loader = 1
@@ -377,8 +395,6 @@ def main(args):
     args.is_local_master = (not args.distributed) or (args.global_rank == 0)
 
     utils.set_seed(args.random_seed)
-    logs = {"epoch": [], "iter": [], "saveStep": args.save_step}
-    logs["logging_step"] = args.logging_step
 
     print(f'CONFIG:\n{json.dumps(vars(args), indent=4, sort_keys=True)}')
     print('-' * 50)
@@ -475,7 +491,7 @@ def main(args):
         cpcCriterion = getCriterion(args, cpcModel.gEncoder.DOWNSAMPLING,
                                     len(speakers), nPhones)
 
-    if args.load_optimizer:
+    if load_optimizer:
         state_dict = torch.load(args.load[0], 'cpu')
         cpcCriterion.load_state_dict(state_dict["cpcCriterion"])
 
@@ -513,7 +529,7 @@ def main(args):
                                  betas=(args.beta1, args.beta2),
                                  eps=args.epsilon)
 
-    if args.load_optimizer:
+    if load_optimizer:
         print("Loading optimizer " + args.load[0])
         state_dict = torch.load(args.load[0], 'cpu')
         if "optimizer" in state_dict:
@@ -584,7 +600,7 @@ def main(args):
         clustering)
 
 
-def parseArgs(argv):
+def parseArgs(argv, defaults=None):
     # Run parameters
     parser = argparse.ArgumentParser(description='Trainer')
 
@@ -664,23 +680,9 @@ def parseArgs(argv):
                                  help="Multi-GPU - Local rank")
     group_distrubed.add_argument("--master_port", type=int, default=-1,
                                  help="Master port (for multi-node SLURM jobs)")
+    if defaults is not None:
+        parser.set_defaults(**defaults)
     args = parser.parse_args(argv)
-
-    args.load_optimizer = False
-    if args.pathCheckpoint is not None and not args.restart:
-        cdata = fl.getCheckpointData(args.pathCheckpoint)
-        if cdata is not None:
-            forbidden_attr = ["nGPU", "pathCheckpoint", "local_rank",
-                              "global_rank","node_id", "n_gpu_per_node"
-                              "debug", "restart", "world_size", "n_nodes"]
-            data, logs, locArgs = cdata
-            print(f"Checkpoint detected at {data}")
-            to_replace = { k : v for k, v in vars(locArgs).items() \
-                           if k not in forbidden_attr}
-            parser.set_defaults(**to_replace)
-            args = parser.parse_args(argv)
-            args.load, args.load_optimizer = [data], True
-            args.loadCriterion = True
 
     if args.pathDB is None and (args.pathCheckpoint is None or args.restart):
         parser.print_help()
