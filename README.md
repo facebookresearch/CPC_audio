@@ -209,7 +209,7 @@ python cpc/eval/common_voices_eval.py per $OUTPUT_DIR --pathVal $PATH_COMMON_VOI
 
 ## torch hub
 
-This model is also available via [torch.hub](https://pytorch.org/docs/stable/hub.html). For more details, have a look at hubconf.py.
+This model is also available via [torch.hub](https://pytorch.org/docs/stable/hub.html). For more details, have a look at [hubconf.py](hubconf.py).
 
 ## Citations
 Please consider citing this project in your publications if it helps your research.
