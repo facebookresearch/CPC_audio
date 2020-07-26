@@ -23,8 +23,10 @@ class FFNetwork(nn.Module):
 class ShiftedConv(nn.Module):
     def __init__(self, dimOutputAR, dimOutputEncoder, kernelSize):
         super(ShiftedConv, self).__init__()
-        self.module = EqualizedConv1d(dimOutputAR, dimOutputEncoder,
-                                      kernelSize, equalized=True,
+        self.module = EqualizedConv1d(dimOutputAR,
+                                      dimOutputEncoder,
+                                      kernelSize,
+                                      equalized=True,
                                       padding=0)
         self.kernelSize = kernelSize
 
@@ -42,7 +44,6 @@ class ShiftedConv(nn.Module):
 
 
 class PredictionNetwork(nn.Module):
-
     def __init__(self,
                  nPredicts,
                  dimOutputAR,
@@ -59,8 +60,7 @@ class PredictionNetwork(nn.Module):
         self.dropout = nn.Dropout(p=0.5) if dropout else None
         for i in range(nPredicts):
             if rnnMode == 'RNN':
-                self.predictors.append(
-                    nn.RNN(dimOutputAR, dimOutputEncoder))
+                self.predictors.append(nn.RNN(dimOutputAR, dimOutputEncoder))
                 self.predictors[-1].flatten_parameters()
             elif rnnMode == 'LSTM':
                 self.predictors.append(
@@ -68,8 +68,8 @@ class PredictionNetwork(nn.Module):
                 self.predictors[-1].flatten_parameters()
             elif rnnMode == 'ffd':
                 self.predictors.append(
-                    FFNetwork(dimOutputAR, dimOutputEncoder,
-                              dimOutputEncoder, 0))
+                    FFNetwork(dimOutputAR, dimOutputEncoder, dimOutputEncoder,
+                              0))
             elif rnnMode == 'conv4':
                 self.predictors.append(
                     ShiftedConv(dimOutputAR, dimOutputEncoder, 4))
@@ -82,21 +82,24 @@ class PredictionNetwork(nn.Module):
             elif rnnMode == 'transformer':
                 from transformers import buildTransformerAR
                 self.predictors.append(
-                    buildTransformerAR(dimOutputEncoder,
-                                       1,
-                                       sizeInputSeq,
+                    buildTransformerAR(dimOutputEncoder, 1, sizeInputSeq,
                                        False))
             else:
                 self.predictors.append(
                     nn.Linear(dimOutputAR, dimOutputEncoder, bias=False))
                 if dimOutputEncoder > dimOutputAR:
                     residual = dimOutputEncoder - dimOutputAR
-                    self.predictors[-1].weight.data.copy_(torch.cat([torch.randn(
-                        dimOutputAR, dimOutputAR), self.RESIDUAL_STD * torch.randn(residual, dimOutputAR)], dim=0))
+                    self.predictors[-1].weight.data.copy_(
+                        torch.cat([
+                            torch.randn(dimOutputAR,
+                                        dimOutputAR), self.RESIDUAL_STD *
+                            torch.randn(residual, dimOutputAR)
+                        ],
+                                  dim=0))
 
     def forward(self, c, candidates):
 
-        assert(len(candidates) == len(self.predictors))
+        assert (len(candidates) == len(self.predictors))
         out = []
 
         # UGLY
@@ -113,13 +116,12 @@ class PredictionNetwork(nn.Module):
             if self.dropout is not None:
                 locC = self.dropout(locC)
             locC = locC.view(locC.size(0), 1, locC.size(1), locC.size(2))
-            outK = (locC*candidates[k]).mean(dim=3)
+            outK = (locC * candidates[k]).mean(dim=3)
             out.append(outK)
         return out
 
 
 class BaseCriterion(nn.Module):
-
     def warmUp(self):
         return False
 
@@ -137,31 +139,36 @@ class NoneCriterion(BaseCriterion):
 
 
 class CPCUnsupersivedCriterion(BaseCriterion):
-
-    def __init__(self,
-                 nPredicts,             # Number of steps
-                 dimOutputAR,           # Dimension of G_ar
-                 dimOutputEncoder,      # Dimension of the convolutional net
-                 negativeSamplingExt,   # Number of negative samples to draw
-                 mode=None,
-                 rnnMode=False,
-                 dropout=False,
-                 speakerEmbedding=0,
-                 nSpeakers=0,
-                 sizeInputSeq=128):
+    def __init__(
+        self,
+        nPredicts,  # Number of steps
+        dimOutputAR,  # Dimension of G_ar
+        dimOutputEncoder,  # Dimension of the convolutional net
+        negativeSamplingExt,  # Number of negative samples to draw
+        mode=None,
+        rnnMode=False,
+        dropout=False,
+        speakerEmbedding=0,
+        nSpeakers=0,
+        sizeInputSeq=128):
 
         super(CPCUnsupersivedCriterion, self).__init__()
         if speakerEmbedding > 0:
             print(
-                f"Using {speakerEmbedding} speaker embeddings for {nSpeakers} speakers")
+                f"Using {speakerEmbedding} speaker embeddings for {nSpeakers} speakers"
+            )
             self.speakerEmb = torch.nn.Embedding(nSpeakers, speakerEmbedding)
             dimOutputAR += speakerEmbedding
         else:
             self.speakerEmb = None
 
-        self.wPrediction = PredictionNetwork(
-            nPredicts, dimOutputAR, dimOutputEncoder, rnnMode=rnnMode,
-            dropout=dropout, sizeInputSeq=sizeInputSeq - nPredicts)
+        self.wPrediction = PredictionNetwork(nPredicts,
+                                             dimOutputAR,
+                                             dimOutputEncoder,
+                                             rnnMode=rnnMode,
+                                             dropout=dropout,
+                                             sizeInputSeq=sizeInputSeq -
+                                             nPredicts)
         self.nPredicts = nPredicts
         self.negativeSamplingExt = negativeSamplingExt
         self.lossCriterion = nn.CrossEntropyLoss()
@@ -178,21 +185,22 @@ class CPCUnsupersivedCriterion(BaseCriterion):
 
         negExt = encodedData.contiguous().view(-1, dimEncoded)
         # Draw nNegativeExt * batchSize negative samples anywhere in the batch
-        batchIdx = torch.randint(low=0, high=batchSize,
-                                 size=(self.negativeSamplingExt
-                                       * windowSize * batchSize, ),
+        batchIdx = torch.randint(low=0,
+                                 high=batchSize,
+                                 size=(self.negativeSamplingExt * windowSize *
+                                       batchSize, ),
                                  device=encodedData.device)
 
-        seqIdx = torch.randint(low=1, high=nNegativeExt,
-                               size=(self.negativeSamplingExt
-                                     * windowSize * batchSize, ),
+        seqIdx = torch.randint(low=1,
+                               high=nNegativeExt,
+                               size=(self.negativeSamplingExt * windowSize *
+                                     batchSize, ),
                                device=encodedData.device)
 
         baseIdx = torch.arange(0, windowSize, device=encodedData.device)
-        baseIdx = baseIdx.view(1, 1,
-                               windowSize).expand(1,
-                                                  self.negativeSamplingExt,
-                                                  windowSize).expand(batchSize, self.negativeSamplingExt, windowSize)
+        baseIdx = baseIdx.view(1, 1, windowSize).expand(
+            1, self.negativeSamplingExt,
+            windowSize).expand(batchSize, self.negativeSamplingExt, windowSize)
         seqIdx += baseIdx.contiguous().view(-1)
         seqIdx = torch.remainder(seqIdx, nNegativeExt)
 
@@ -208,7 +216,7 @@ class CPCUnsupersivedCriterion(BaseCriterion):
 
             # Positive samples
             if k < self.nPredicts:
-                posSeq = encodedData[:, k:-(self.nPredicts-k)]
+                posSeq = encodedData[:, k:-(self.nPredicts - k)]
             else:
                 posSeq = encodedData[:, k:]
 
@@ -258,12 +266,10 @@ class CPCUnsupersivedCriterion(BaseCriterion):
 
 
 class SpeakerCriterion(BaseCriterion):
-
     def __init__(self, dimEncoder, nSpeakers):
 
         super(SpeakerCriterion, self).__init__()
-        self.linearSpeakerClassifier = nn.Linear(
-            dimEncoder, nSpeakers)
+        self.linearSpeakerClassifier = nn.Linear(dimEncoder, nSpeakers)
         self.lossCriterion = nn.CrossEntropyLoss()
         self.entropyCriterion = nn.LogSoftmax(dim=1)
 
@@ -282,9 +288,7 @@ class SpeakerCriterion(BaseCriterion):
 
 
 class PhoneCriterion(BaseCriterion):
-
-    def __init__(self, dimEncoder, nPhones, onEncoder,
-                 nLayers=1):
+    def __init__(self, dimEncoder, nPhones, onEncoder, nLayers=1):
 
         super(PhoneCriterion, self).__init__()
         if nLayers == 1:
@@ -320,7 +324,6 @@ class PhoneCriterion(BaseCriterion):
 
 
 class CTCPhoneCriterion(BaseCriterion):
-
     def __init__(self, dimEncoder, nPhones, onEncoder):
 
         super(CTCPhoneCriterion, self).__init__()
@@ -333,7 +336,7 @@ class CTCPhoneCriterion(BaseCriterion):
 
     def getPrediction(self, cFeature):
         B, S, H = cFeature.size()
-        cFeature = cFeature.contiguous().view(B*S, H)
+        cFeature = cFeature.contiguous().view(B * S, H)
         return self.PhoneCriterionClassifier(cFeature).view(B, S, -1)
 
     def forward(self, cFeature, otherEncoded, label):
@@ -342,15 +345,15 @@ class CTCPhoneCriterion(BaseCriterion):
         B, S, H = cFeature.size()
         predictions = self.getPrediction(cFeature)
         label = label.to(predictions.device)
-        label,  sizeLabels = collapseLabelChain(label)
+        label, sizeLabels = collapseLabelChain(label)
 
         avgPER = 0.
         predictions = torch.nn.functional.log_softmax(predictions, dim=2)
         predictions = predictions.permute(1, 0, 2)
-        targetSizePred = torch.ones(B, dtype=torch.int64,
-                                    device=predictions.device) * S
-        loss = self.lossCriterion(predictions, label,
-                                  targetSizePred, sizeLabels).view(1, -1)
+        targetSizePred = torch.ones(
+            B, dtype=torch.int64, device=predictions.device) * S
+        loss = self.lossCriterion(predictions, label, targetSizePred,
+                                  sizeLabels).view(1, -1)
 
         return loss, avgPER * torch.ones(1, 1, device=loss.device)
 
@@ -364,4 +367,27 @@ class ModelCriterionCombined(torch.nn.Module):
     def forward(self, data, label):
         c_feature, encoded_data, label = self.model(data, label)
         loss, acc = self.criterion(c_feature, encoded_data, label)
+        return loss, acc
+
+
+# Linear classifier for LID
+class LangCriterion(BaseCriterion):
+    def __init__(self, dimEncoder, nLangs):
+
+        super(LangCriterion, self).__init__()
+        self.linearLangClassifier = nn.Linear(dimEncoder, nLangs)
+        self.lossCriterion = nn.CrossEntropyLoss()
+        self.entropyCriterion = nn.LogSoftmax(dim=1)
+
+    def forward(self, cFeature, otherEncoded, label):
+
+        # cFeature.size() : batchSize x seq Size x hidden size
+        batchSize = cFeature.size(0)
+        cFeature = cFeature[:, -1, :]
+        cFeature = cFeature.view(batchSize, -1)
+        predictions = self.linearLangClassifier(cFeature)
+
+        loss = self.lossCriterion(predictions, label).view(1, -1)
+        acc = (predictions.max(1)[1] == label).double().mean().view(1, -1)
+
         return loss, acc
