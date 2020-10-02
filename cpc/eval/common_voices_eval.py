@@ -377,6 +377,8 @@ def get_PER_args(args):
     args.dropout = data.get("dropout", False)
     args.in_dim = data.get("in_dim", 1)
     args.loss_reduction = data.get("loss_reduction", "mean")
+    args.level_gru = data.get("level_gru", None)
+    args.size_kernel = data.get("size_kernel", 8)
     return args
 
 
@@ -504,15 +506,20 @@ if __name__ == "__main__":
         feature_maker = IDModule()
         hiddenGar = args.in_dim
     else:
+        updateConfig = None
+        if args.level_gru is not None:
+            updateConfig = argparse.Namespace(nLevelsGRU=args.level_gru)
         feature_maker, hiddenGar, _ = loadModel([args.pathCheckpoint],
-                                                loadStateDict=not args.no_pretraining)
+                                                loadStateDict=not args.no_pretraining,
+                                                updateConfig=updateConfig)
     feature_maker.cuda()
     feature_maker = torch.nn.DataParallel(feature_maker)
 
     phone_criterion = CTCphone_criterion(hiddenGar, nPhones, args.LSTM,
                                          seqNorm=args.seqNorm,
                                          dropout=args.dropout,
-                                         reduction=args.loss_reduction)
+                                         reduction=args.loss_reduction,
+                                         sizeKernel=args.size_kernel)
     phone_criterion.cuda()
     phone_criterion = torch.nn.DataParallel(phone_criterion)
 

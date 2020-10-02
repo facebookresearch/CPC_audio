@@ -118,6 +118,7 @@ def update_base_parser(parser):
                              "number of speaker X to sample per couple A,B")
     parser.add_argument("--out", type=str, default=None,
                         help="Path where the results should be saved")
+    parser.add_argument("--level_gru", type=int, default=None)
 
 
 def parse_args(argv):
@@ -172,8 +173,11 @@ def main(argv):
     args = parse_args(argv)
 
     if args.load == 'from_checkpoint':
+        updateConfig = None
+        if args.level_gru is not None:
+            updateConfig = argparse.Namespace(nLevelsGRU=args.level_gru)
         # Checkpoint
-        model = loadModel([args.path_checkpoint])[0]
+        model = loadModel([args.path_checkpoint], updateConfig=updateConfig)[0]
         model.gAR.keepHidden = True
         # Feature maker
         feature_maker = FeatureModule(model, args.get_encoded).cuda().eval()
