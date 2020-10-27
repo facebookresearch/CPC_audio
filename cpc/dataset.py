@@ -261,11 +261,8 @@ class AudioBatchData(Dataset):
 def loadFile(data):
     speaker, fullPath = data
     seqName = fullPath.stem
-    # Due to some issues happening when combining torchaudio.load
-    # with torch.multiprocessing we use soundfile to load the data
-    seq = torch.tensor(sf.read(fullPath)[0]).float()
-    if len(seq.size()) == 2:
-        seq = seq.mean(dim=1)
+    seq = torchaudio.load(fullPath)[0].view(-1)
+
     return speaker, seqName, seq
 
 
