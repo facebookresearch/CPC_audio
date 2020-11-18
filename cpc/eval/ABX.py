@@ -17,8 +17,7 @@ def reduce_sparse_data(quotient, divisor):
     return quotient / (1e-08 * (divisor == 0) + divisor)
 
 
-def ABX(args,
-        feature_function,
+def ABX(feature_function,
         path_item_file,
         seq_list,
         distance_mode,
@@ -47,8 +46,7 @@ def ABX(args,
         ABXIterator = ABXDataset.get_iterator('within', max_size_group)
         group_confusion = abx_g.get_abx_scores_dtw_on_group(ABXIterator,
                                                             distance_function,
-                                                            ABXIterator.symmetric,
-                                                            nprocess=args.num_processes)
+                                                            ABXIterator.symmetric)
         n_data = group_confusion._values().size(0)
         index_ = torch.sparse.LongTensor(group_confusion._indices(),
                                          torch.ones((n_data),
@@ -75,8 +73,7 @@ def ABX(args,
 
         group_confusion = abx_g.get_abx_scores_dtw_on_group(ABXIterator,
                                                             distance_function,
-                                                            ABXIterator.symmetric,
-                                                            nprocess=args.num_processes)
+                                                            ABXIterator.symmetric)
         n_data = group_confusion._values().size(0)
         index_ = torch.sparse.LongTensor(group_confusion._indices(),
                                          torch.ones((n_data),
@@ -207,7 +204,7 @@ def main(argv):
     if args.debug:
         seq_list = seq_list[:1000]
 
-    scores = ABX(args, feature_function, args.path_item_file,
+    scores = ABX(feature_function, args.path_item_file,
                  seq_list, distance_mode,
                  step_feature, modes,
                  cuda=args.cuda,
