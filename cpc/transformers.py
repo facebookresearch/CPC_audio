@@ -35,8 +35,27 @@ class ScaledDotProductAttention(nn.Module):
         stdv = 1. / math.sqrt(mat.size(dim))
         mat.data.uniform_(-stdv, stdv)
 
+    def prepare(self, x):
+        # Input dim : N x S x dk
+        N, S, k = x.size()
+
+        r_ = S % self.sizeSeq
+        if r_ > 0:
+            to_add = torch.zeros(size=(N, self.sizeSeq -r_, k),
+                                 device=x.device,
+                                 dtype=x.dtype)
+            x = torch.cat([x, to_add], dim=1)
+            S += self.sizeSeq -r_
+
+        return x.view(N * (S // self.sizeSeq), self.sizeSeq, k)
+
     def forward(self, Q, K, V):
         # Input dim : N x sizeSeq x dk
+        N, S, k = Q.size()
+        Q = self.prepare(Q)
+        K = self.prepare(K)
+        V = self.prepare(V)
+
         QK = torch.bmm(Q, K.transpose(-2, -1))
 
         if self.relpos:
@@ -46,7 +65,9 @@ class ScaledDotProductAttention(nn.Module):
             QP = torch.cat((self.z.expand(bsz, -1, -1), QP), 2)
             QK += QP.view(bsz, self.sizeSeq + 1, self.sizeSeq)[:, 1:, :]
         A = self.softmax(QK / math.sqrt(K.size(-1)) + self.mask)
-        return torch.bmm(self.drop(A), V)
+        out = torch.bmm(self.drop(A), V)
+        out = out.view(N, -1, k)[:, :S]
+        return out
 
 
 class MultiHeadAttention(nn.Module):
@@ -146,6 +167,7 @@ class StaticPositionEmbedding(nn.Module):
 
     def forward(self, x):
         return x + self.pe[:, :x.size(1), :]
+
 
 
 def buildTransformerAR(dimEncoded,    # Output dimension of the encoder
