@@ -19,10 +19,11 @@ def init_distributed_mode(params):
         - world_size
     """
     params.is_slurm_job = 'SLURM_JOB_ID' in os.environ
-    print("SLURM job: %s" % str(params.is_slurm_job))
-    print(f"CUDA_VISIBLE_DEVICES: {os.environ['CUDA_VISIBLE_DEVICES']}")
     # SLURM job
     if params.is_slurm_job:
+
+        print("SLURM job: %s" % str(params.is_slurm_job))
+        print(f"CUDA_VISIBLE_DEVICES: {os.environ['CUDA_VISIBLE_DEVICES']}")
 
         # on the cluster, this is handled by SLURM
         assert params.local_rank == -1
