@@ -12,16 +12,20 @@ from copy import deepcopy
 import random
 import psutil
 import sys
+import torchaudio
 
 import cpc.criterion as cr
 import cpc.model as model
 import cpc.utils.misc as utils
 import cpc.feature_loader as fl
+from cpc.balance_sampler import get_balance_sampler
 from cpc.cpc_default_config import set_default_cpc_config
-from cpc.dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels
+from cpc.dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels, \
+                        PeakNorm
 from cpc.criterion.research import CPCBertCriterion, DeepEmbeddedClustering, \
     DeepClustering, CTCCLustering, buildNewPhoneDict
 from cpc.distributed_training.distributed_mode import init_distributed_mode
+from cpc.data_augmentation import augmentation_factory
 
 
 def getCriterion(args, downsampling, nSpeakers, nPhones):
@@ -47,7 +51,8 @@ def getCriterion(args, downsampling, nSpeakers, nPhones):
                                                        nSpeakers=nSpeakers,
                                                        speakerEmbedding=args.speakerEmbedding,
                                                        sizeInputSeq=sizeInputSeq,
-                                                       multihead_rnn=args.multihead_rnn)
+                                                       multihead_rnn=args.multihead_rnn,
+                                                       transformer_pruning=args.transformer_pruning)
     elif args.pathPhone is not None:
         if not args.CTC:
             cpcCriterion = cr.PhoneCriterion(dimFeatures,
@@ -71,38 +76,44 @@ def loadCriterion(pathCheckpoint, downsampling, nSpeakers, nPhones):
     return criterion
 
 
-def adversarialTrainStep(dataLoader, model,
+def adversarialTrainStep(dataLoader, cpcModel,
                          cpcCriterion, optimizerCPC,
                          speakerCriterion, optimizerPhone,
                          clustering, loggingStep):
 
-    model.train()
+    cpcModel.train()
     speakerCriterion.train()
     cpcCriterion.train()
     start_time = time.perf_counter()
 
     logs = {"loss_train_speak": 0, "acc_train_speak": 0}
     iter, lastlogs, n_examples = 0, None, 0
-    for step, fulldata in enumerate(dataLoader):
+    for step, full_data in enumerate(dataLoader):
 
         optimizerCPC.zero_grad()
         optimizerPhone.zero_grad()
 
-        batchData, labelSpeaker, labelPhone = fulldata
-        batchData = batchData.cuda(non_blocking=True)
-        labelSpeaker = labelSpeaker.cuda(non_blocking=True)
-        labelPhone = labelPhone.cuda(non_blocking=True)
-        cFeature, encodedData, labelSpeaker = model(batchData, labelSpeaker)
+        sequence, label = [x.cuda(non_blocking=True) for x in full_data]
+        past, future = sequence[:, 0, ...], sequence[:, 1, ...]
 
-        allLosses, allAcc = cpcCriterion(cFeature, encodedData, labelSpeaker)
-        lossSpeak, _ = speakerCriterion(cFeature, encodedData, None)
+        b = past.size(0)
+        n_examples += b
+
+        combined = torch.cat([past, future], dim=0)
+        label = torch.cat([label, label])
+
+        c_feature, encoded_data, label = cpcModel(combined, label)
+        c_feature = c_feature[:b, :, :]
+        encoded_data = encoded_data[b:, :, :]
+        label =label[:b]
+
+        allLosses, allAcc = cpcCriterion(c_feature, encoded_data, label)
+        lossSpeak, _ = speakerCriterion(c_feature, encoded_data, None)
         totLoss = allLosses.sum() + lossSpeak.sum()
 
         if clustering is not None:
-            lossCluster = clustering(cFeature, labelPhone)
+            lossCluster = clustering(c_feature, labelPhone)
             totLoss += lossCluster.sum()
-
-        n_examples += batchData.size(0)
 
         if "locLoss_train_cpc" not in logs:
             logs["locLoss_train_cpc"] = np.zeros(allLosses.size(1))
@@ -127,7 +138,7 @@ def adversarialTrainStep(dataLoader, model,
         optimizerPhone.zero_grad()
 
         lossSpeak, accSpeak = speakerCriterion(
-            cFeature.detach(), encodedData.detach(), labelSpeaker)
+            c_feature.detach(), encoded_data.detach(), label)
 
         totLoss = lossSpeak.sum()
         totLoss.backward()
@@ -170,48 +181,57 @@ def trainStep(dataLoader,
     n_examples = 0
     logs, lastlogs = {}, None
     iter = 0
-    for step, fulldata in enumerate(dataLoader):
-        batchData, label = fulldata
-        n_examples += batchData.size(0)
-        batchData = batchData.cuda(non_blocking=True)
-        label = label.cuda(non_blocking=True)
-        c_feature, encoded_data, label = cpcModel(batchData, label)
+    for step, full_data in enumerate(dataLoader):
+        sequence, label = [x.cuda(non_blocking=True) for x in full_data]
+        past, future = sequence[:, 0, ...], sequence[:, 1, ...]
+
+        b = past.size(0)
+        n_examples += b
+
+        combined = torch.cat([past, future], dim=0)
+        label = torch.cat([label, label])
+
+        c_feature, encoded_data, label = cpcModel(combined, label)
+        c_feature = c_feature[:b, :, :]
+        encoded_data = encoded_data[b:, :, :]
+        label =label[:b]
+
         allLosses, allAcc = cpcCriterion(c_feature, encoded_data, label)
         totLoss = allLosses.sum()
+        totLoss.backward()
 
         if clustering is not None:
             lossCluster = clustering(c_feature, label)
             totLoss += lossCluster.sum()
 
-        totLoss.backward()
-
         # Show grads ?
         optimizer.step()
         optimizer.zero_grad()
 
-        if "locLoss_train" not in logs:
-            logs["locLoss_train"] = np.zeros(allLosses.size(1))
-            logs["locAcc_train"] = np.zeros(allLosses.size(1))
-            if clustering is not None:
-                logs["lossCluster_train"] = np.zeros(lossCluster.size(1))
+        if allLosses.nelement() > 0:
+            if "locLoss_train" not in logs:
+                logs["locLoss_train"] = np.zeros(allLosses.size(1))
+                logs["locAcc_train"] = np.zeros(allLosses.size(1))
+                if clustering is not None:
+                    logs["lossCluster_train"] = np.zeros(lossCluster.size(1))
 
-        iter += 1
-        logs["locLoss_train"] += (allLosses.mean(dim=0)).detach().cpu().numpy()
-        logs["locAcc_train"] += (allAcc.mean(dim=0)).cpu().numpy()
-        if clustering is not None:
-            logs["lossCluster_train"] += (lossCluster.mean(dim=0)
-                                          ).detach().cpu().numpy()
-        if (step + 1) % loggingStep == 0:
-            new_time = time.perf_counter()
-            elapsed = new_time - start_time
-            print(f"Update {step + 1}")
-            print(f"elapsed: {elapsed:.1f} s")
-            print(
-                f"{1000.0 * elapsed / loggingStep:.1f} ms per batch, {1000.0 * elapsed / n_examples:.1f} ms / example")
-            locLogs = utils.update_logs(logs, loggingStep, lastlogs)
-            lastlogs = deepcopy(logs)
-            utils.show_logs("Training loss", locLogs)
-            start_time, n_examples = new_time, 0
+            iter += 1
+            logs["locLoss_train"] += (allLosses.mean(dim=0)).detach().cpu().numpy()
+            logs["locAcc_train"] += (allAcc.mean(dim=0)).cpu().numpy()
+            if clustering is not None:
+                logs["lossCluster_train"] += (lossCluster.mean(dim=0)
+                                              ).detach().cpu().numpy()
+            if (step + 1) % loggingStep == 0:
+                new_time = time.perf_counter()
+                elapsed = new_time - start_time
+                print(f"Update {step + 1}")
+                print(f"elapsed: {elapsed:.1f} s")
+                print(
+                    f"{1000.0 * elapsed / loggingStep:.1f} ms per batch, {1000.0 * elapsed / n_examples:.1f} ms / example")
+                locLogs = utils.update_logs(logs, loggingStep, lastlogs)
+                lastlogs = deepcopy(logs)
+                utils.show_logs("Training loss", locLogs)
+                start_time, n_examples = new_time, 0
 
     if scheduler is not None:
         scheduler.step()
@@ -234,15 +254,21 @@ def valStep(dataLoader,
     cpcModel.eval()
     iter = 0
 
-    for step, fulldata in enumerate(dataLoader):
+    for step, full_data in enumerate(dataLoader):
+        sequence, label = [x.cuda(non_blocking=True) for x in full_data]
 
-        batchData, label = fulldata
+        past, future = sequence[:, 0, ...], sequence[:, 1, ...]
+        label = torch.cat([label, label])
 
-        batchData = batchData.cuda(non_blocking=True)
-        label = label.cuda(non_blocking=True)
+        b = past.size(0)
 
         with torch.no_grad():
-            c_feature, encoded_data, label = cpcModel(batchData, label)
+            combined = torch.cat([past, future], dim=0)
+            c_feature, encoded_data, label = cpcModel(combined, label)
+            c_feature = c_feature[:b, ...]
+            encoded_data = encoded_data[b:, ...]
+            label =label[:b]
+
             allLosses, allAcc = cpcCriterion(c_feature, encoded_data, label)
             if clustering is not None:
                 lossCluster = clustering(c_feature, label)
@@ -270,6 +296,7 @@ def run(trainDataset,
         valDataset,
         batchSize,
         samplingMode,
+        balance_sampler,
         cpcModel,
         cpcCriterion,
         nEpoch,
@@ -313,14 +340,12 @@ def run(trainDataset,
                     print(
                         f"{fillingStatus} clusters empty out of {clustering.module.k}")
 
-        if adversarial is not None:
-            trainDataset.doubleLabels = True
-
         trainLoader = trainDataset.getDataLoader(batchSize, samplingMode,
-                                                 True, numWorkers=0)
+                                                 True, numWorkers=0,
+                                                 balance_sampler=balance_sampler)
 
         valLoader = valDataset.getDataLoader(batchSize, 'sequential', False,
-                                             numWorkers=0)
+                                             numWorkers=0) if valDataset else []
 
         print("Training dataset %d batches, Validation dataset %d batches, batch size %d" %
               (len(trainLoader), len(valLoader), batchSize))
@@ -336,18 +361,22 @@ def run(trainDataset,
                 trainLoader, cpcModel, cpcCriterion, optimizer,
                 scheduler, clustering, logs["logging_step"])
 
-        locLogsVal = valStep(valLoader, cpcModel, cpcCriterion, clustering)
+        if valDataset:
+            locLogsVal = valStep(valLoader, cpcModel, cpcCriterion, clustering)
 
         print(f'Ran {epoch + 1} epochs '
               f'in {time.time() - start_time:.2f} seconds')
 
-        torch.cuda.empty_cache()
-
-        currentAccuracy = float(locLogsVal["locAcc_val"].mean())
-        if currentAccuracy > bestAcc:
+        if valDataset:
+            currentAccuracy = float(locLogsVal["locAcc_val"].mean())
+            if currentAccuracy > bestAcc:
+                bestStateDict = fl.get_module(cpcModel).state_dict()
+        else:
             bestStateDict = fl.get_module(cpcModel).state_dict()
 
-        for key, value in dict(locLogsTrain, **locLogsVal).items():
+        items = dict(locLogsTrain, **locLogsVal).items() if valDataset else locLogsTrain.items()
+
+        for key, value in items:
             if key not in logs:
                 logs[key] = [None for x in range(epoch)]
             if isinstance(value, np.ndarray):
@@ -374,6 +403,7 @@ def main(argv):
     logs = {"epoch": [], "iter": [], "saveStep": args.save_step}
     logs["logging_step"] = args.logging_step
     load_optimizer = False
+
     if args.pathCheckpoint is not None and not args.restart:
         cdata = fl.getCheckpointData(args.pathCheckpoint)
         if cdata is not None:
@@ -387,6 +417,7 @@ def main(argv):
             args = parseArgs(argv, default_values)
             args.load, load_optimizer = [data], True
             args.loadCriterion = True
+    batchSize = args.nGPU * args.batchSizeGPU
 
     if args.distributed:
         print('Distributed mode, moving to 1 process for data loading')
@@ -401,7 +432,8 @@ def main(argv):
 
     seqNames, speakers = findAllSeqs(args.pathDB,
                                      extension=args.file_extension,
-                                     loadCache=not args.ignore_cache)
+                                     loadCache=not args.ignore_cache,
+                                     cache_path=args.path_cache)
 
     print(f'Found files: {len(seqNames)} seqs, {len(speakers)} speakers')
     # Datasets
@@ -411,10 +443,8 @@ def main(argv):
         seqTrain = seqNames
 
     if args.pathVal is None:
-        random.shuffle(seqTrain)
-        sizeTrain = int(0.99 * len(seqTrain))
-        seqTrain, seqVal = seqTrain[:sizeTrain], seqTrain[sizeTrain:]
-        print(f'Found files: {len(seqTrain)} train, {len(seqVal)} val')
+        print('No validation data specified!')
+        seqVal = []
     else:
         seqVal = filterSeqs(args.pathVal, seqNames)
 
@@ -428,17 +458,46 @@ def main(argv):
         phoneLabels, nPhones = parseSeqLabels(args.pathPhone)
         print(f"{nPhones} phones found")
 
+    # Noise data
+    seqNoise = None
+    noiseDataset = None
+
+    if args.pathDBNoise is not None:
+        seqNoise, _ = findAllSeqs(args.pathDBNoise,
+                                   extension=args.noise_extension,
+                                   loadCache=not args.ignore_cache,
+                                   speaker_level=0)
+        if args.pathSeqNoise is not None:
+            seqNoise = filterSeqs(args.pathSeqNoise, seqNoise)
+        if args.debug:
+            seqNoise = seqNoise[:100]
+
+        print("")
+        print(f'Loading noise data at {args.pathDBNoise}')
+        print("Loading the noise dataset")
+        noiseDataset =  AudioBatchData(args.pathDBNoise, args.sizeWindow,
+                                       seqNoise, None, 1,
+                                       transform=PeakNorm(),
+                                       nProcessLoader=args.n_process_loader,
+                                       MAX_SIZE_LOADED=args.max_size_loaded)
+
     if args.distributed:
+        import random
+        random.Random(4).shuffle(seqTrain)
         def filter_distributed(files):
             start = len(files) * args.global_rank // args.world_size
             end = len(files) * (args.global_rank + 1) // args.world_size
+            print(start, end)
             return files[start:end]
         print(
             f'Initial worker files: {len(seqTrain)} train, {len(seqVal)} val')
         seqTrain = filter_distributed(seqTrain)
         seqVal = filter_distributed(seqVal)
+        if seqNoise is not None:
+            seqNoise = filter_distributed(seqNoise)
         print(
             f'Current worker files: {len(seqTrain)} train, {len(seqVal)} val')
+
 
     print("")
     print(f'Loading audio data at {args.pathDB}')
@@ -449,19 +508,25 @@ def main(argv):
                                   phoneLabels,
                                   len(speakers),
                                   nProcessLoader=args.n_process_loader,
-                                  MAX_SIZE_LOADED=args.max_size_loaded)
+                                  MAX_SIZE_LOADED=args.max_size_loaded,
+                                  augment_future=args.augment_future,
+                                  augment_past=args.augment_past,
+                                  augmentation=augmentation_factory(args, noiseDataset))
     print("Training dataset loaded")
     print("")
 
-    print("Loading the validation dataset")
-    valDataset = AudioBatchData(args.pathDB,
+    if seqVal:
+        print("Loading the validation dataset")
+        valDataset = AudioBatchData(args.pathDB,
                                 args.sizeWindow,
                                 seqVal,
                                 phoneLabels,
                                 len(speakers),
                                 nProcessLoader=args.n_process_loader)
-    print("Validation dataset loaded")
-    print("")
+        print("Validation dataset loaded")
+        print("")
+    else:
+        valDataset = None
 
     if args.load is not None:
         cpcModel, args.hiddenGar, args.hiddenEncoder = \
@@ -480,7 +545,6 @@ def main(argv):
         else:
             cpcModel = model.CPCModel(encoderNet, arNet)
 
-    batchSize = args.nGPU * args.batchSizeGPU
     cpcModel.supervised = args.supervised
 
     # Training criterion
@@ -585,10 +649,16 @@ def main(argv):
                                             device_ids=range(args.nGPU))
         adversarial.cuda()
 
+    balance_sampler = None
+    if args.balance_type is not None:
+        balance_sampler= get_balance_sampler(args.balance_type,
+                                             balance_coeff=args.balance_coeff)
+
     run(trainDataset,
         valDataset,
         batchSize,
         args.samplingType,
+        balance_sampler,
         cpcModel,
         cpcCriterion,
         args.nEpoch,
@@ -625,9 +695,14 @@ def parseArgs(argv, defaults=None):
     group_db.add_argument('--ignore_cache', action='store_true',
                           help='Activate if the dataset has been modified '
                           'since the last training session.')
+    group_db.add_argument('--path_cache', type=str,default=None,
+                          help="For big datasets, path to an existing cache")
     group_db.add_argument('--max_size_loaded', type=int, default=4000000000,
                           help='Maximal amount of data (in byte) a dataset '
                           'can hold in memory at any given time')
+    group_db.add_argument('--balance_type', type=str, default=None,
+                         choices=['linear', 'log', 'pow'])
+    group_db.add_argument('--balance_coeff', type=float, default=0.5)
     group_supervised = parser.add_argument_group(
         'Supervised mode (depreciated)')
     group_supervised.add_argument('--supervised', action='store_true',
@@ -689,6 +764,8 @@ def parseArgs(argv, defaults=None):
         print("Either provides an input dataset or a checkpoint to load")
         sys.exit()
 
+    assert args.bandreject_scaler >= 0
+
     if args.pathCheckpoint is not None:
         args.pathCheckpoint = os.path.abspath(args.pathCheckpoint)
 
@@ -709,7 +786,6 @@ def parseArgs(argv, defaults=None):
     if args.arMode == 'no_ar':
         args.hiddenGar = args.hiddenEncoder
     return args
-
 
 if __name__ == "__main__":
     torch.multiprocessing.set_start_method('spawn')
