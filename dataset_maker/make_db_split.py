@@ -48,7 +48,9 @@ def extract_subset(sequence_data,
         print(f"Gender {repr(sd.Gender(index))}")
         print(f"{loc_target_n_speakers} speakers detected")
         if random_sampling:
-            loc_train_sequences, loc_remainers = samplers.random_sampling(sequence_data,
+            speaker_list = samplers.get_top_n_speakers(loc_speaker_size, loc_target_n_speakers)
+            loc_seq = sd.filter_by_speaker(sequence_data, speaker_list)
+            loc_train_sequences, loc_remainers = samplers.random_sampling(loc_seq,
                                                                           loc_target_time)
         else:
             loc_speaker_selection = \
@@ -75,7 +77,7 @@ def parse_args(argv):
                         'on the dataset')
     parser.add_argument('--file_extension', type=str, default=".wav")
     parser.add_argument('-o', '--output', type=str, default="coin")
-    parser.add_argument('--n_speakers', type=int, default=251,
+    parser.add_argument('--n_speakers', type=int, default=-1,
                         help='Number of speaker in the training subset')
     parser.add_argument('--gender_file', type=str, default=None,
                         help='Path to a file detailling the gender of the '
@@ -103,6 +105,9 @@ def parse_args(argv):
     parser.add_argument('--ignore', type=str, default=None, nargs='*',
                         help='Exclude the given sequences from the '
                         'sampling')
+    group_perp = parser.add_mutually_exclusive_group(required=False)
+    group_perp.add_argument('--top_perplexity', type=float, default=None)
+    group_perp.add_argument('--worst_perplexity', type=float, default=None)
 
     return parser.parse_args(argv)
 
@@ -115,6 +120,9 @@ def main(args):
     speakers = sd.load_speaker_list(path_cache_speaker)
     n_speakers_original = len(speakers)
 
+    if args.n_speakers < 0:
+        args.n_speakers = n_speakers_original
+
     if args.path_filter is not None:
         sequence_data = sd.filter_sequence_data(
             sequence_data, args.path_filter)
@@ -123,6 +131,15 @@ def main(args):
         for file_name in args.ignore:
             print(f"Ignoring sequences from {file_name}")
             sequence_data = sd.remove_sequence_data(sequence_data, file_name)
+
+    if args.top_perplexity is not None:
+        sequence_data = samplers.get_top_by_attr(sequence_data, "perplexity",
+                                                 args.top_perplexity * 3600)
+    if args.worst_perplexity is not None:
+        sequence_data = samplers.get_top_by_attr(sequence_data, "perplexity",
+                                                 args.worst_perplexity * 3600,
+                                                 reverse=True)
+
 
     args.target_time *= 3600
     args.target_time_val *= 3600

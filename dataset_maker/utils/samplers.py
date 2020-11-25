@@ -1,11 +1,50 @@
 from random import sample, shuffle
 from pathlib import Path
+from typing import Dict, List
+from .sequence_data import SequenceData
 
 
-def estimate_balanced_speakers(speaker_sizes,
-                               n_speakers,
-                               target_size,
-                               min_size_speaker):
+def get_common_seqs(ref_1: List[str], ref_2: List[str]) -> List[str]:
+    ref_1.sort()
+    ref_2.sort()
+
+    i_ = 0
+    out = []
+    for seq in ref_1:
+        while i_ < len(ref_2) and Path(ref_2[i_]).stem < Path(seq).stem:
+            i_ += 1
+
+        if i_ < len(ref_2) and Path(ref_2[i_]).stem == Path(seq).stem:
+            out.append(seq)
+
+    return out
+
+
+def get_top_by_attr(sequence_data: List[SequenceData],
+                    key: str,
+                    target_time: float,
+                    reverse=False) -> List[SequenceData]:
+    sequence_data.sort(key=lambda x: getattr(x, key), reverse=reverse)
+    tot_time = 0
+    out = []
+    for seq in sequence_data:
+        out.append(seq)
+        tot_time += seq.time
+        if tot_time >= target_time:
+            break
+    return out
+
+
+def get_top_n_speakers(speaker_size: List[float], n_speakers: int):
+    sorted_speaker_indexed = [(x, i) for i, x in enumerate(speaker_sizes)]
+    sorted_speaker_indexed.sort(reverse=True)
+    return [x[1] for x in sorted_speaker_indexed[:n_speakers]]
+
+
+def estimate_balanced_speakers(speaker_sizes: List[float],
+                               n_speakers: int,
+                               target_size: float,
+                               min_size_speaker: float) -> Dict[int, float]:
     r"""
     Estimate the quantity of data to extract for each speaker in order
     to get a speaker distribution as bakanced as possible containing n_speakers
@@ -18,7 +57,7 @@ def estimate_balanced_speakers(speaker_sizes,
     working_data = [x[0] for x in sorted_speaker_indexed]
 
     curr_time = 0
-    index_max = n_speakers
+    index_max = len(sorted_speaker_indexed)
     output = {x[1]: 0 for x in sorted_speaker_indexed}
 
     while curr_time < target_size:
@@ -45,7 +84,8 @@ def estimate_balanced_speakers(speaker_sizes,
     return output
 
 
-def filter_by_speaker_time_target(sequences, speaker_times):
+def filter_by_speaker_time_target(sequences: List[SequenceData],
+                                  speaker_times: Dict[int, float]) -> List[SequenceData]:
     r"""
     Samples randomly sequences from the input list so that the speaker
     distribution matched the one described by speaker_times
@@ -68,7 +108,7 @@ def filter_by_speaker_time_target(sequences, speaker_times):
     return out, remainers
 
 
-def random_sampling(sequences, target_time):
+def random_sampling(sequences: List[SequenceData], target_time: float):
 
     shuffle(sequences)
     t = 0
