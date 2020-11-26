@@ -535,18 +535,16 @@ def findAllSeqs(dirName,
     prefixSize = len(dirName)
     speakersTarget = {}
     outSequences = []
-    for root, dirs, filenames in tqdm.tqdm(os.walk(dirName)):
-        filtered_files = [f for f in filenames if f.endswith(extension)]
+    for path_file in tqdm.tqdm(Path(dirName).glob(f'**/*{extension}')):
 
-        if len(filtered_files) > 0:
-            speakerStr = (os.sep).join(
-                root[prefixSize:].split(os.sep)[:speaker_level])
-            if speakerStr not in speakersTarget:
-                speakersTarget[speakerStr] = len(speakersTarget)
-            speaker = speakersTarget[speakerStr]
-            for filename in filtered_files:
-                full_path = os.path.join(root[prefixSize:], filename)
-                outSequences.append((speaker, full_path))
+        path_str = str(path_file)
+        speakerStr = (os.sep).join(
+            path_str[prefixSize:].split(os.sep)[speaker_level])
+        if speakerStr not in speakersTarget:
+            speakersTarget[speakerStr] = len(speakersTarget)
+        speaker = speakersTarget[speakerStr]
+        outSequences.append((speaker, path_str[prefixSize:]))
+
     outSpeakers = [None for x in speakersTarget]
     for key, index in speakersTarget.items():
         outSpeakers[index] = key
