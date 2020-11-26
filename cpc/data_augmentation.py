@@ -289,7 +289,7 @@ class CombinedTransforms:
         assert bool(augment_cfgs is not None) ^ (augment_transforms is not None)
 
         if augment_cfgs is not None:
-            self.transforms = [get_augment(x) for x in augment_cfgs]
+            self.transforms = [get_augment(x.augment_type, **x.config) for x in augment_cfgs]
         elif augment_transforms is not None:
             self.transforms = augment_transforms
 
