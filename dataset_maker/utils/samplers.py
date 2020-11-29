@@ -47,7 +47,7 @@ def estimate_balanced_speakers(speaker_sizes: List[float],
                                min_size_speaker: float) -> Dict[int, float]:
     r"""
     Estimate the quantity of data to extract for each speaker in order
-    to get a speaker distribution as bakanced as possible containing n_speakers
+    to get a speaker distribution as balanced as possible containing n_speakers
     """
     sorted_speaker_indexed = [(x, i) for i, x in enumerate(speaker_sizes)
                               if x > min_size_speaker]
@@ -61,7 +61,7 @@ def estimate_balanced_speakers(speaker_sizes: List[float],
     output = {x[1]: 0 for x in sorted_speaker_indexed}
 
     while curr_time < target_size:
-        next_target_size = (target_size - curr_time) / n_speakers
+        next_target_size = (target_size - curr_time) / index_max
         if working_data[index_max - 1] >= next_target_size:
             index_cut = index_max
         else:
