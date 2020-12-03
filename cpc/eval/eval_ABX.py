@@ -25,11 +25,12 @@ def ABX(feature_function,
         modes,
         cuda=False,
         max_x_across=5,
-        max_size_group=30):
+        max_size_group=30,
+        normalize=True):
 
     # ABX dataset
     ABXDataset = abx_it.ABXFeatureLoader(path_item_file, seq_list,
-                                         feature_function, step_feature, True)
+                                         feature_function, step_feature, normalize)
 
     if cuda:
         ABXDataset.cuda()

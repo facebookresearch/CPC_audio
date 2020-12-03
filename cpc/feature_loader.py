@@ -24,18 +24,54 @@ class FeatureModule(torch.nn.Module):
         self.featureMaker = featureMaker
         self.collapse = collapse
 
+    @property
+    def out_feature_dim(self):
+        if self.get_encoded:
+            return self.featureMaker.gEncoder.getDimOutput()
+        return self.featureMaker.gAR.getDimOutput()
+
     def getDownsamplingFactor(self):
         return self.featureMaker.gEncoder.DOWNSAMPLING
 
     def forward(self, data):
 
         batchAudio, label = data
+        if len(batchAudio.size()) == 4:
+            batchAudio = batchAudio[:, 0]
         cFeature, encoded, _ = self.featureMaker(batchAudio.cuda(), label)
         if self.get_encoded:
             cFeature = encoded
         if self.collapse:
             cFeature = cFeature.contiguous().view(-1, cFeature.size(2))
         return cFeature
+
+
+class CPCModule(torch.nn.Module):
+
+    def __init__(self,
+                 feature_maker,
+                 cpc_criterion,
+                 main_distance_only=False,
+                 n_pred = -1):
+
+        super(CPCModule, self).__init__()
+        self.feature_maker = feature_maker
+        self.cpc_criterion = cpc_criterion
+        self.n_pred = n_pred
+        self.main_distance_only = main_distance_only
+
+    def getDownsamplingFactor(self):
+        return self.feature_maker.gEncoder.DOWNSAMPLING
+
+    def forward(self, data):
+        batchAudio, label = data
+        cFeature, encoded, label = self.feature_maker(batchAudio.cuda(), label)
+        if self.main_distance_only:
+            predictions = self.cpc_criterion.getCosineDistances(cFeature, encoded)[self.n_pred]
+        else:
+            predictions = self.cpc_criterion.getPrediction(cFeature, encoded, label)[0][self.n_pred]
+            predictions = torch.nn.functional.softmax(predictions, dim=1)
+        return predictions
 
 
 class ModelPhoneCombined(torch.nn.Module):
@@ -113,7 +149,7 @@ def loadArgs(args, locArgs, forbiddenAttr=None):
 
 
 def loadSupervisedCriterion(pathCheckpoint):
-    from .criterion import CTCPhoneCriterion, PhoneCriterion
+    from cpc.criterion import CTCPhoneCriterion, PhoneCriterion
 
     *_, args = getCheckpointData(os.path.dirname(pathCheckpoint))
     _, nPhones = parseSeqLabels(args.pathPhone)
@@ -169,7 +205,7 @@ def getEncoder(args):
 def getAR(args):
     if args.arMode == 'transformer':
         from .transformers import buildTransformerAR
-        arNet = buildTransformerAR(args.hiddenEncoder, 1,
+        arNet = buildTransformerAR(args.hiddenEncoder, args.nLevelsGRU,
                                    args.sizeWindow // 160, args.abspos)
         args.hiddenGar = args.hiddenEncoder
     elif args.cpc_mode == "bert":
@@ -241,7 +277,7 @@ def get_module(i_module):
     if isinstance(i_module, torch.nn.DataParallel):
         return get_module(i_module.module)
     if isinstance(i_module, FeatureModule):
-        return get_module(i_module.module)
+        return get_module(i_module.featureMaker)
     if isinstance(i_module, torch.nn.parallel.DistributedDataParallel):
         return get_module(i_module.module)
     return i_module

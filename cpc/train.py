@@ -23,9 +23,10 @@ from cpc.cpc_default_config import set_default_cpc_config
 from cpc.dataset import AudioBatchData, findAllSeqs, filterSeqs, parseSeqLabels, \
                         PeakNorm
 from cpc.criterion.research import CPCBertCriterion, DeepEmbeddedClustering, \
-    DeepClustering, CTCCLustering, buildNewPhoneDict
+    DeepClustering, CTCCLustering
 from cpc.distributed_training.distributed_mode import init_distributed_mode
 from cpc.data_augmentation import augmentation_factory
+from cpc.clustering.clustering import buildNewPhoneDict
 
 
 def getCriterion(args, downsampling, nSpeakers, nPhones):
