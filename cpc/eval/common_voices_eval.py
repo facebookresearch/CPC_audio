@@ -5,6 +5,7 @@
 import argparse
 import os
 import torchaudio
+import random
 from copy import deepcopy
 import torch
 import time
@@ -14,6 +15,7 @@ import json
 import subprocess
 import sys
 import progressbar
+import numpy as np
 from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 from torch.multiprocessing import Pool
@@ -21,22 +23,31 @@ from cpc.criterion.seq_alignment import get_seq_PER
 from cpc.criterion.seq_alignment import beam_search
 from cpc.feature_loader import loadModel
 from cpc.dataset import findAllSeqs, parseSeqLabels, filterSeqs
+from cpc.model import ChannelNorm
+from cpc.data_augmentation import AugmentCfg, CombinedTransforms
 
 
 def load(path_item):
-    seq_name = path_item.stem
-    data = torchaudio.load(str(path_item))[0].view(1, -1)
+    seq_name, seq_ext = path_item.stem, path_item.suffix
+    if seq_ext == ".npy":
+        data = torch.tensor(np.load(str(path_item))).float()
+        data = data.view(data.size(0), data.size(1)).permute(1, 0)
+    else:
+        data = torchaudio.load(str(path_item))[0].view(1, -1)
     return seq_name, data
 
 
 class SingleSequenceDataset(Dataset):
-
-    def __init__(self,
-                 pathDB,
-                 seqNames,
-                 phoneLabelsDict,
-                 inDim=1,
-                 transpose=True):
+    def __init__(
+        self,
+        pathDB,
+        seqNames,
+        phoneLabelsDict,
+        inDim=1,
+        transpose=True,
+        random_offset_amplitude=80,
+        transform=None,
+    ):
         """
         Args:
             - path (string): path to the training dataset
@@ -55,6 +66,8 @@ class SingleSequenceDataset(Dataset):
         self.inDim = inDim
         self.transpose = transpose
         self.loadSeqs()
+        self.random_offset_amplitude = random_offset_amplitude
+        self.transform = transform
 
     def loadSeqs(self):
 
@@ -67,7 +80,6 @@ class SingleSequenceDataset(Dataset):
         self.maxSizePhone = 0
 
         # Data
-
         nprocess = min(30, len(self.seqNames))
 
         start_time = time.time()
@@ -77,17 +89,17 @@ class SingleSequenceDataset(Dataset):
             poolData = p.map(load, to_load)
 
         tmpData = []
-        poolData.sort()
+        poolData.sort(key=lambda x: x[0])
 
         totSize = 0
-        minSizePhone = float('inf')
+        minSizePhone = float("inf")
         for seqName, seq in poolData:
             self.phoneLabels += self.phoneLabelsDict[seqName]
             self.phoneOffsets.append(len(self.phoneLabels))
-            self.maxSizePhone = max(self.maxSizePhone, len(
-                self.phoneLabelsDict[seqName]))
-            minSizePhone = min(minSizePhone, len(
-                self.phoneLabelsDict[seqName]))
+            self.maxSizePhone = max(
+                self.maxSizePhone, len(self.phoneLabelsDict[seqName])
+            )
+            minSizePhone = min(minSizePhone, len(self.phoneLabelsDict[seqName]))
             sizeSeq = seq.size(1)
             self.maxSize = max(self.maxSize, sizeSeq)
             totSize += sizeSeq
@@ -96,17 +108,22 @@ class SingleSequenceDataset(Dataset):
             del seq
         self.data = torch.cat(tmpData, dim=1)
         self.phoneLabels = torch.tensor(self.phoneLabels, dtype=torch.long)
-        print(f'Loaded {len(self.phoneOffsets)} sequences '
-              f'in {time.time() - start_time:.2f} seconds')
-        print(f'maxSizeSeq : {self.maxSize}')
-        print(f'maxSizePhone : {self.maxSizePhone}')
+        print(
+            f"Loaded {len(self.phoneOffsets)} sequences "
+            f"in {time.time() - start_time:.2f} seconds"
+        )
+        print(f"maxSizeSeq : {self.maxSize}")
+        print(f"maxSizePhone : {self.maxSizePhone}")
         print(f"minSizePhone : {minSizePhone}")
-        print(f'Total size dataset {totSize / (16000 * 3600)} hours')
+        print(f"Total size dataset {totSize / (16000 * 3600)} hours")
+
+    def get_name(self, idx):
+        return self.seqNames[idx]
 
     def __getitem__(self, idx):
 
         offsetStart = self.seqOffset[idx]
-        offsetEnd = self.seqOffset[idx+1]
+        offsetEnd = self.seqOffset[idx + 1]
         offsetPhoneStart = self.phoneOffsets[idx]
         offsetPhoneEnd = self.phoneOffsets[idx + 1]
 
@@ -116,44 +133,68 @@ class SingleSequenceDataset(Dataset):
         outSeq = torch.zeros((self.inDim, self.maxSize))
         outPhone = torch.zeros((self.maxSizePhone))
 
-        outSeq[:, :sizeSeq] = self.data[:, offsetStart:offsetEnd]
+        offset = 0
+        if self.random_offset_amplitude > 0:
+            offset = random.randint(0, self.random_offset_amplitude)
+            sizeSeq -= offset
+
+        outSeq[:, :sizeSeq] = self.data[:, offsetStart + offset : offsetEnd]
         outPhone[:sizePhone] = self.phoneLabels[offsetPhoneStart:offsetPhoneEnd]
 
-        return outSeq,  torch.tensor([sizeSeq], dtype=torch.long), outPhone.long(),  torch.tensor([sizePhone], dtype=torch.long)
+        if self.transform is not None:
+            outSeq = self.transform(outSeq)
+
+        return (
+            outSeq,
+            torch.tensor([sizeSeq], dtype=torch.long),
+            outPhone.long(),
+            torch.tensor([sizePhone], dtype=torch.long),
+        )
 
     def __len__(self):
         return len(self.seqOffset) - 1
 
 
 class CTCphone_criterion(torch.nn.Module):
-
-    def __init__(self, dimEncoder, nPhones, LSTM=False, sizeKernel=8,
-                 seqNorm=False, dropout=False, reduction='sum'):
-
+    def __init__(
+        self,
+        dimEncoder,
+        nPhones,
+        LSTM=False,
+        sizeKernel=8,
+        seqNorm=False,
+        dropout=False,
+        reduction="sum",
+    ):
         super(CTCphone_criterion, self).__init__()
         self.seqNorm = seqNorm
         self.epsilon = 1e-8
-        self.dropout = torch.nn.Dropout2d(
-            p=0.5, inplace=False) if dropout else None
-        self.conv1 = torch.nn.LSTM(dimEncoder, dimEncoder,
-                                   num_layers=1, batch_first=True)
-        self.PhoneCriterionClassifier = torch.nn.Conv1d(
-            dimEncoder, nPhones + 1, sizeKernel, stride=sizeKernel // 2)
-        self.lossCriterion = torch.nn.CTCLoss(blank=nPhones,
-                                              reduction=reduction,
-                                              zero_infinity=True)
+        self.dropout = torch.nn.Dropout(p=0.5, inplace=False) if dropout else None
+        self.conv1 = torch.nn.LSTM(
+            dimEncoder, dimEncoder, num_layers=1, batch_first=True
+        )
+        self.lossCriterion = torch.nn.CTCLoss(
+            blank=nPhones, reduction=reduction, zero_infinity=True
+        )
         self.relu = torch.nn.ReLU()
         self.BLANK_LABEL = nPhones
         self.useLSTM = LSTM
+        self.downsampling_factor = sizeKernel // 2
 
-    def getPrediction(self, cFeature, featureSize):
+        self.PhoneCriterionClassifier = torch.nn.Conv1d(
+            dimEncoder, nPhones + 1, sizeKernel, stride=sizeKernel // 2
+        )
+
+    def getPrediction(self, cFeature, featureSize=None):
         B, S, H = cFeature.size()
         if self.seqNorm:
+            x = torch.tensor(cFeature.size(), device=cFeature.device)
             for b in range(B):
                 size = featureSize[b]
                 m = cFeature[b, :size].mean(dim=0, keepdim=True)
                 v = cFeature[b, :size].var(dim=0, keepdim=True)
-                cFeature[b] = (cFeature[b] - m) / torch.sqrt(v + self.epsilon)
+                x[b] = (cFeature[b] - m) / torch.sqrt(v + self.epsilon)
+            cFeature = x
         if self.useLSTM:
             cFeature = self.conv1(cFeature)[0]
 
@@ -179,8 +220,9 @@ class CTCphone_criterion(torch.nn.Module):
             print(label, labelSize)
         predictions = torch.nn.functional.log_softmax(predictions, dim=2)
         predictions = predictions.permute(1, 0, 2)
-        loss = self.lossCriterion(predictions, label,
-                                  featureSize, labelSize).view(1, -1)
+        loss = self.lossCriterion(predictions, label, featureSize, labelSize).view(
+            1, -1
+        )
 
         if torch.isinf(loss).sum() > 0 or torch.isnan(loss).sum() > 0:
             loss = 0
@@ -189,7 +231,6 @@ class CTCphone_criterion(torch.nn.Module):
 
 
 class IDModule(torch.nn.Module):
-
     def __init__(self):
         super(IDModule, self).__init__()
 
@@ -215,11 +256,7 @@ def prepare_data(data):
     return seq, sizeSeq, phone, sizePhone
 
 
-def train_step(train_loader,
-               model,
-               criterion,
-               optimizer,
-               downsampling_factor):
+def train_step(train_loader, model, criterion, optimizer, downsampling_factor):
 
     if model.optimize:
         model.train()
@@ -245,10 +282,7 @@ def train_step(train_loader,
     return avg_loss / nItems
 
 
-def val_step(val_loader,
-             model,
-             criterion,
-             downsampling_factor):
+def val_step(val_loader, model, criterion, downsampling_factor):
 
     model.eval()
     criterion.eval()
@@ -277,10 +311,7 @@ def get_per(data):
     return out
 
 
-def perStep(val_loader,
-            model,
-            criterion,
-            downsampling_factor):
+def perStep(val_loader, model, criterion, downsampling_factor):
 
     model.eval()
     criterion.eval()
@@ -302,19 +333,28 @@ def perStep(val_loader,
             c_feature, _, _ = model(seq, None)
             sizeSeq = sizeSeq / downsampling_factor
             predictions = torch.nn.functional.softmax(
-                criterion.module.getPrediction(c_feature, sizeSeq), dim=2).cpu()
+                criterion.module.getPrediction(c_feature, sizeSeq), dim=2
+            ).cpu()
             phone = phone.cpu()
             sizeSeq = sizeSeq.cpu()
             sizePhone = sizePhone.cpu()
 
             bs = c_feature.size(0)
-            data_per = [(predictions[b], sizeSeq[b], phone[b], sizePhone[b],
-                         criterion.module.BLANK_LABEL) for b in range(bs)]
+            data_per = [
+                (
+                    predictions[b],
+                    sizeSeq[b],
+                    phone[b],
+                    sizePhone[b],
+                    criterion.module.BLANK_LABEL,
+                )
+                for b in range(bs)
+            ]
 
             with Pool(bs) as p:
                 poolData = p.map(get_per, data_per)
             avgPER += sum([x for x in poolData])
-            varPER += sum([x*x for x in poolData])
+            varPER += sum([x * x for x in poolData])
             nItems += len(poolData)
 
     bar.finish()
@@ -322,44 +362,53 @@ def perStep(val_loader,
     avgPER /= nItems
     varPER /= nItems
 
-    varPER -= avgPER**2
+    varPER -= avgPER ** 2
     print(f"Average PER {avgPER}")
     print(f"Standard deviation PER {math.sqrt(varPER)}")
 
 
-def run(train_loader,
-        val_loader,
-        model,
-        criterion,
-        optimizer,
-        downsampling_factor,
-        nEpochs,
-        pathCheckpoint):
+def run(
+    train_loader,
+    val_loader,
+    model,
+    criterion,
+    optimizer,
+    downsampling_factor,
+    nEpochs,
+    pathCheckpoint,
+    scheduler,
+):
 
     print(f"Starting the training for {nEpochs} epochs")
-    bestLoss = float('inf')
+    bestLoss = float("inf")
 
     for epoch in range(nEpochs):
-        lossTrain = train_step(train_loader, model, criterion,
-                               optimizer, downsampling_factor)
+        lossTrain = train_step(
+            train_loader, model, criterion, optimizer, downsampling_factor
+        )
 
         print(f"Epoch {epoch} loss train : {lossTrain}")
 
         lossVal = val_step(val_loader, model, criterion, downsampling_factor)
         print(f"Epoch {epoch} loss val : {lossVal}")
 
+        if scheduler is not None:
+            scheduler.step()
+
         if lossVal < bestLoss:
             bestLoss = lossVal
-            state_dict = {'classifier': criterion.state_dict(),
-                          'model': model.state_dict(),
-                          'bestLoss': bestLoss}
+            state_dict = {
+                "classifier": criterion.state_dict(),
+                "model": model.state_dict(),
+                "bestLoss": bestLoss,
+            }
             torch.save(state_dict, pathCheckpoint)
 
 
 def get_PER_args(args):
 
     path_args_training = os.path.join(args.output, "args_training.json")
-    with open(path_args_training, 'rb') as file:
+    with open(path_args_training, "rb") as file:
         data = json.load(file)
 
     if args.pathDB is None:
@@ -377,94 +426,212 @@ def get_PER_args(args):
     args.dropout = data.get("dropout", False)
     args.in_dim = data.get("in_dim", 1)
     args.loss_reduction = data.get("loss_reduction", "mean")
+    args.level_gru = data.get("level_gru", None)
+    args.size_kernel = data.get("size_kernel", 8)
     return args
 
 
+def compute_augments(args):
+    if args.augments_json is not None:
+        args.augments = args.augments_json
+
+    elif args.augments_file is not None:
+        with open(args.augments_file, "r") as file:
+            args.augments = json.load(file)
+
+    else:
+        args.augments = None
+
+
 if __name__ == "__main__":
-    torch.multiprocessing.set_start_method('spawn')
-    parser = argparse.ArgumentParser(description='Simple phone recognition pipeline '
-                                                 'for the common voices datasets')
+    torch.multiprocessing.set_start_method("spawn")
+    parser = argparse.ArgumentParser(
+        description="Simple phone recognition pipeline "
+        "for the common voices datasets"
+    )
 
-    subparsers = parser.add_subparsers(dest='command')
+    subparsers = parser.add_subparsers(dest="command")
 
-    parser_train = subparsers.add_parser('train')
-    parser_train.add_argument('pathDB', type=str,
-                              help='Path to the directory containing the '
-                              'audio data / pre-computed features.')
-    parser_train.add_argument('pathPhone', type=str,
-                              help='Path to the .txt file containing the '
-                              'phone transcription.')
-    parser_train.add_argument('pathCheckpoint', type=str,
-                              help='Path to the CPC checkpoint to load. '
-                              'Set to ID to work with pre-cimputed features.')
-    parser_train.add_argument('--freeze', action='store_true',
-                              help="Freeze the CPC features layers")
-    parser_train.add_argument('--pathTrain', default=None, type=str,
-                              help='Path to the .txt files containing the '
-                              'list of the training sequences.')
-    parser_train.add_argument('--pathVal', default=None, type=str,
-                              help='Path to the .txt files containing the '
-                              'list of the validation sequences.')
-    parser_train.add_argument('--file_extension', type=str, default=".mp3",
-                              help='Extension of the files in the '
-                              'dataset')
-    parser_train.add_argument('--batchSize', type=int, default=8)
-    parser_train.add_argument('--nEpochs', type=int, default=30)
-    parser_train.add_argument('--beta1', type=float, default=0.9,
-                              help='Value of beta1 for the Adam optimizer.')
-    parser_train.add_argument('--beta2', type=float, default=0.999,
-                              help='Value of beta2 for the Adam optimizer.')
-    parser_train.add_argument('--epsilon', type=float, default=1e-08,
-                              help='Value of epsilon for the Adam optimizer.')
-    parser_train.add_argument('--lr', type=float, default=2e-04,
-                              help='Learning rate.')
-    parser_train.add_argument('-o', '--output', type=str, default='out',
-                              help="Output directory")
-    parser_train.add_argument('--debug', action='store_true',
-                              help='If activated, will only load a few '
-                              'sequences from the dataset.')
-    parser_train.add_argument('--no_pretraining', action='store_true',
-                              help='Activate use a randmly initialized '
-                              'network')
-    parser_train.add_argument('--LSTM', action='store_true',
-                              help='Activate to add a LSTM to the phone '
-                              'classifier')
-    parser_train.add_argument('--seqNorm', action='store_true',
-                              help='Activate if you want to normalize each '
-                              'batch of features through time before the '
-                              'phone classification.')
-    parser_train.add_argument('--kernelSize', type=int, default=8,
-                              help='Number of features to concatenate before '
-                              'feeding them to the phone classifier.')
-    parser_train.add_argument('--dropout', action='store_true')
-    parser_train.add_argument('--in_dim', type=int, default=1,
-                              help='Dimension of the input data: useful when '
-                              'working with pre-computed features or '
-                              'stereo audio.')
-    parser_train.add_argument('--loss_reduction', type=str, default='mean',
-                              choices=['mean', 'sum'])
+    parser_train = subparsers.add_parser("train")
+    parser_train.add_argument(
+        "pathDB",
+        type=str,
+        help="Path to the directory containing the "
+        "audio data / pre-computed features.",
+    )
+    parser_train.add_argument(
+        "pathPhone",
+        type=str,
+        help="Path to the .txt file containing the " "phone transcription.",
+    )
+    parser_train.add_argument(
+        "pathCheckpoint",
+        type=str,
+        help="Path to the CPC checkpoint to load. "
+        "Set to ID to work with pre-cimputed features.",
+    )
+    parser_train.add_argument(
+        "--freeze", action="store_true", help="Freeze the CPC features layers"
+    )
+    parser_train.add_argument(
+        "--pathTrain",
+        default=None,
+        type=str,
+        help="Path to the .txt files containing the " "list of the training sequences.",
+    )
+    parser_train.add_argument(
+        "--pathVal",
+        default=None,
+        type=str,
+        help="Path to the .txt files containing the "
+        "list of the validation sequences.",
+    )
+    parser_train.add_argument(
+        "--file_extension",
+        type=str,
+        default=".mp3",
+        help="Extension of the files in the " "dataset",
+    )
+    parser_train.add_argument("--batchSize", type=int, default=8)
+    parser_train.add_argument("--nEpochs", type=int, default=30)
+    parser_train.add_argument(
+        "--beta1",
+        type=float,
+        default=0.9,
+        help="Value of beta1 for the Adam optimizer.",
+    )
+    parser_train.add_argument(
+        "--beta2",
+        type=float,
+        default=0.999,
+        help="Value of beta2 for the Adam optimizer.",
+    )
+    parser_train.add_argument(
+        "--epsilon",
+        type=float,
+        default=1e-08,
+        help="Value of epsilon for the Adam optimizer.",
+    )
+    parser_train.add_argument("--lr", type=float, default=2e-04, help="Learning rate.")
+    parser_train.add_argument(
+        "--feature_lr_multiplier", type=float, default=1e-2, help="Learning rate."
+    )
+    parser_train.add_argument(
+        "-o", "--output", type=str, default="out", help="Output directory"
+    )
+    parser_train.add_argument(
+        "--debug",
+        action="store_true",
+        help="If activated, will only load a few " "sequences from the dataset.",
+    )
+    parser_train.add_argument(
+        "--no_pretraining",
+        action="store_true",
+        help="Activate use a randmly initialized " "network",
+    )
+    parser_train.add_argument(
+        "--LSTM",
+        action="store_true",
+        help="Activate to add a LSTM to the phone " "classifier",
+    )
+    parser_train.add_argument(
+        "--seqNorm",
+        action="store_true",
+        help="Activate if you want to normalize each "
+        "batch of features through time before the "
+        "phone classification.",
+    )
+    parser_train.add_argument(
+        "--kernelSize",
+        type=int,
+        default=8,
+        help="Number of features to concatenate before "
+        "feeding them to the phone classifier.",
+    )
+    parser_train.add_argument("--dropout", action="store_true")
+    parser_train.add_argument(
+        "--in_dim",
+        type=int,
+        default=1,
+        help="Dimension of the input data: useful when "
+        "working with pre-computed features or "
+        "stereo audio.",
+    )
+    parser_train.add_argument(
+        "--loss_reduction",
+        type=str,
+        default="mean",
+        choices=["mean", "sum"],
+        help="Loss reduction mode for the CTC loss " "default one is mean.",
+    )
+    parser_train.add_argument(
+        "--roffset",
+        type=int,
+        default=0,
+        help="If given, will offset each sequence by a random "
+        "offset f maximum amplitude @roffset",
+    )
+    parser_train.add_argument(
+        "--scheduler_step", type=int, default=-1, help="LR decay step size."
+    )
+    parser_train.add_argument(
+        "--level_gru",
+        type=int,
+        default=None,
+        help="If given, will load only the @level_gru first "
+        "layers of the AR network in the CPC feature maker.",
+    )
+    parser_train.add_argument(
+        "--size_kernel",
+        type=int,
+        default=8,
+        help="Number of consecutive CPC features to consider "
+        "for the phoneme classifier.",
+    )
 
-    parser_per = subparsers.add_parser('per')
-    parser_per.add_argument('output', type=str)
-    parser_per.add_argument('--batchSize', type=int, default=8)
-    parser_per.add_argument('--debug', action='store_true',
-                            help='If activated, will only load a few '
-                            'sequences from the dataset.')
-    parser_per.add_argument('--pathDB',
-                            help="For computing the PER on another dataset",
-                            type=str, default=None)
-    parser_per.add_argument('--pathVal',
-                            help="For computing the PER on specific sequences",
-                            type=str, default=None)
-    parser_per.add_argument('--pathPhone',
-                            help="For computing the PER on specific sequences",
-                            default=None, type=str)
-    parser_per.add_argument('--file_extension', type=str, default=".mp3")
-    parser_per.add_argument('--name', type=str, default="0")
+    augment_parser = parser_train.add_mutually_exclusive_group()
+    augment_parser.add_argument(
+        "--augments_json", type=json.loads, nargs="*", default=None
+    )
+    augment_parser.add_argument(
+        "--augments_file",
+        type=str,
+        help="Path to a file containing the data augmentation parameters",
+        default=None,
+    )
+
+    parser_per = subparsers.add_parser("per")
+    parser_per.add_argument("output", type=str)
+    parser_per.add_argument("--batchSize", type=int, default=8)
+    parser_per.add_argument(
+        "--debug",
+        action="store_true",
+        help="If activated, will only load a few " "sequences from the dataset.",
+    )
+    parser_per.add_argument(
+        "--pathDB",
+        help="For computing the PER on another dataset",
+        type=str,
+        default=None,
+    )
+    parser_per.add_argument(
+        "--pathVal",
+        help="For computing the PER on specific sequences",
+        type=str,
+        default=None,
+    )
+    parser_per.add_argument(
+        "--pathPhone",
+        help="For computing the PER on specific sequences",
+        default=None,
+        type=str,
+    )
+    parser_per.add_argument("--file_extension", type=str, default=".mp3")
+    parser_per.add_argument("--name", type=str, default="0")
 
     args = parser.parse_args()
 
-    if args.command == 'per':
+    if args.command == "per":
         args = get_PER_args(args)
 
     # Output Directory
@@ -472,61 +639,76 @@ if __name__ == "__main__":
         os.mkdir(args.output)
 
     name = f"_{args.name}" if args.command == "per" else ""
-    pathLogs = os.path.join(args.output, f'logs_{args.command}{name}.txt')
+    pathLogs = os.path.join(args.output, f"logs_{args.command}{name}.txt")
     tee = subprocess.Popen(["tee", pathLogs], stdin=subprocess.PIPE)
     os.dup2(tee.stdin.fileno(), sys.stdout.fileno())
 
     phoneLabels, nPhones = parseSeqLabels(args.pathPhone)
 
-    inSeqs, _ = findAllSeqs(args.pathDB,
-                            extension=args.file_extension)
+    inSeqs, _ = findAllSeqs(args.pathDB, extension=args.file_extension, loadCache=False)
     # Datasets
-    if args.command == 'train' and args.pathTrain is not None:
+    if args.command == "train" and args.pathTrain is not None:
         seqTrain = filterSeqs(args.pathTrain, inSeqs)
     else:
         seqTrain = inSeqs
 
-    if args.pathVal is None and args.command == 'train':
+    if args.pathVal is None and args.command == "train":
         random.shuffle(seqTrain)
         sizeTrain = int(0.9 * len(seqTrain))
         seqTrain, seqVal = seqTrain[:sizeTrain], seqTrain[sizeTrain:]
     elif args.pathVal is not None:
         seqVal = filterSeqs(args.pathVal, inSeqs)
     else:
-        raise RuntimeError("No validation dataset found for PER computation")
+        seqVal = inSeqs
 
     if args.debug:
         seqVal = seqVal[:100]
 
     downsampling_factor = 160
-    if args.pathCheckpoint == 'ID':
+    if args.pathCheckpoint == "ID":
         downsampling_factor = 1
         feature_maker = IDModule()
         hiddenGar = args.in_dim
     else:
-        feature_maker, hiddenGar, _ = loadModel([args.pathCheckpoint],
-                                                loadStateDict=not args.no_pretraining)
+        updateConfig = None
+        if args.level_gru is not None:
+            updateConfig = argparse.Namespace(nLevelsGRU=args.level_gru)
+        feature_maker, hiddenGar, _ = loadModel(
+            [args.pathCheckpoint],
+            loadStateDict=not args.no_pretraining,
+            updateConfig=updateConfig,
+        )
     feature_maker.cuda()
     feature_maker = torch.nn.DataParallel(feature_maker)
 
-    phone_criterion = CTCphone_criterion(hiddenGar, nPhones, args.LSTM,
-                                         seqNorm=args.seqNorm,
-                                         dropout=args.dropout,
-                                         reduction=args.loss_reduction)
+    phone_criterion = CTCphone_criterion(
+        hiddenGar,
+        nPhones,
+        args.LSTM,
+        seqNorm=args.seqNorm,
+        dropout=args.dropout,
+        reduction=args.loss_reduction,
+        sizeKernel=args.size_kernel,
+    )
     phone_criterion.cuda()
     phone_criterion = torch.nn.DataParallel(phone_criterion)
 
     print(f"Loading the validation dataset at {args.pathDB}")
-    datasetVal = SingleSequenceDataset(args.pathDB, seqVal,
-                                       phoneLabels, inDim=args.in_dim)
+    datasetVal = SingleSequenceDataset(
+        args.pathDB,
+        seqVal,
+        phoneLabels,
+        inDim=args.in_dim,
+        random_offset_amplitude=0,
+        transform=None,
+    )
 
-    val_loader = DataLoader(datasetVal, batch_size=args.batchSize,
-                            shuffle=True)
+    val_loader = DataLoader(datasetVal, batch_size=args.batchSize, shuffle=True)
 
     # Checkpoint file where the model should be saved
-    pathCheckpoint = os.path.join(args.output, 'checkpoint.pt')
+    pathCheckpoint = os.path.join(args.output, "checkpoint.pt")
 
-    if args.command == 'train':
+    if args.command == "train":
         feature_maker.optimize = True
         if args.freeze:
             feature_maker.eval()
@@ -541,45 +723,80 @@ if __name__ == "__main__":
             seqVal = seqVal[:100]
 
         print(f"Loading the training dataset at {args.pathDB}")
+        transform = None
+        compute_augments(args)
 
-        datasetTrain = SingleSequenceDataset(args.pathDB, seqTrain,
-                                             phoneLabels, inDim=args.in_dim)
+        if args.augments is not None:
+            augment_cfgs = [AugmentCfg(**cfg) for cfg in args.augments]
+            transform = CombinedTransforms(augment_cfgs)
+        datasetTrain = SingleSequenceDataset(
+            args.pathDB,
+            seqTrain,
+            phoneLabels,
+            inDim=args.in_dim,
+            random_offset_amplitude=args.roffset,
+            transform=transform,
+        )
 
-        train_loader = DataLoader(datasetTrain, batch_size=args.batchSize,
-                                  shuffle=True)
+        train_loader = DataLoader(datasetTrain, batch_size=args.batchSize, shuffle=True)
 
         # Optimizer
-        g_params = list(phone_criterion.parameters())
         if not args.freeze:
             print("Optimizing model")
-            g_params += list(feature_maker.parameters())
+            optimizer = torch.optim.AdamW(
+                [
+                    {"params": phone_criterion.parameters()},
+                    {
+                        "params": feature_maker.parameters(),
+                        "lr": args.lr * args.feature_lr_multiplier,
+                    },
+                ],
+                lr=args.lr,
+                betas=(args.beta1, args.beta2),
+                eps=args.epsilon,
+            )
+        else:
+            optimizer = torch.optim.AdamW(
+                list(phone_criterion.parameters()),
+                lr=args.lr,
+                betas=(args.beta1, args.beta2),
+                eps=args.epsilon,
+            )
 
-        optimizer = torch.optim.Adam(g_params, lr=args.lr,
-                                     betas=(args.beta1, args.beta2),
-                                     eps=args.epsilon)
+        scheduler = None
+        if args.scheduler_step > 0:
+            scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer, args.scheduler_step, gamma=0.5
+            )
 
         pathArgs = os.path.join(args.output, "args_training.json")
-        with open(pathArgs, 'w') as file:
+        with open(pathArgs, "w") as file:
             json.dump(vars(args), file, indent=2)
 
-        run(train_loader, val_loader, feature_maker, phone_criterion,
-            optimizer, downsampling_factor, args.nEpochs, pathCheckpoint)
+        run(
+            train_loader=train_loader,
+            val_loader=val_loader,
+            model=feature_maker,
+            criterion=phone_criterion,
+            optimizer=optimizer,
+            downsampling_factor=downsampling_factor,
+            nEpochs=args.nEpochs,
+            pathCheckpoint=pathCheckpoint,
+            scheduler=scheduler,
+        )
 
     else:
         print(f"Loading data at {pathCheckpoint}")
-        state_dict = torch.load(pathCheckpoint,
-                                map_location=lambda storage, loc: storage)
-        if 'bestLoss' in state_dict:
+        state_dict = torch.load(
+            pathCheckpoint, map_location=lambda storage, loc: storage
+        )
+        if "bestLoss" in state_dict:
             print(f"Best loss : {state_dict['bestLoss']}")
-        phone_criterion.load_state_dict(state_dict['classifier'])
-        feature_maker.load_state_dict(state_dict['model'])
+        phone_criterion.load_state_dict(state_dict["classifier"])
+        feature_maker.load_state_dict(state_dict["model"])
 
-        pathArgs = os.path.join(args.output,
-                                f"args_validation_{args.name}.json")
-        with open(pathArgs, 'w') as file:
+        pathArgs = os.path.join(args.output, f"args_validation_{args.name}.json")
+        with open(pathArgs, "w") as file:
             json.dump(vars(args), file, indent=2)
 
-        perStep(val_loader,
-                feature_maker,
-                phone_criterion,
-                downsampling_factor)
+        perStep(val_loader, feature_maker, phone_criterion, downsampling_factor)

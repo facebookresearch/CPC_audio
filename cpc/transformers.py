@@ -35,8 +35,27 @@ class ScaledDotProductAttention(nn.Module):
         stdv = 1. / math.sqrt(mat.size(dim))
         mat.data.uniform_(-stdv, stdv)
 
+    def prepare(self, x):
+        # Input dim : N x S x dk
+        N, S, k = x.size()
+
+        r_ = S % self.sizeSeq
+        if r_ > 0:
+            to_add = torch.zeros(size=(N, self.sizeSeq -r_, k),
+                                 device=x.device,
+                                 dtype=x.dtype)
+            x = torch.cat([x, to_add], dim=1)
+            S += self.sizeSeq -r_
+
+        return x.view(N * (S // self.sizeSeq), self.sizeSeq, k)
+
     def forward(self, Q, K, V):
         # Input dim : N x sizeSeq x dk
+        N, S, k = Q.size()
+        Q = self.prepare(Q)
+        K = self.prepare(K)
+        V = self.prepare(V)
+
         QK = torch.bmm(Q, K.transpose(-2, -1))
 
         if self.relpos:
@@ -46,7 +65,9 @@ class ScaledDotProductAttention(nn.Module):
             QP = torch.cat((self.z.expand(bsz, -1, -1), QP), 2)
             QK += QP.view(bsz, self.sizeSeq + 1, self.sizeSeq)[:, 1:, :]
         A = self.softmax(QK / math.sqrt(K.size(-1)) + self.mask)
-        return torch.bmm(self.drop(A), V)
+        out = torch.bmm(self.drop(A), V)
+        out = out.view(N, -1, k)[:, :S]
+        return out
 
 
 class MultiHeadAttention(nn.Module):
@@ -55,14 +76,16 @@ class MultiHeadAttention(nn.Module):
                  dropout,   # Dropout parameter
                  dmodel,    # Model's dimension
                  nheads,    # Number of heads in the model
-                 abspos):   # Is positional information encoded in the input ?
+                 abspos,    # Is positional information encoded in the input ?
+                 top_k=0):
         super(MultiHeadAttention, self).__init__()
-        self.Wo = nn.Linear(dmodel, dmodel, bias=False)
+        self.top_k = top_k
         self.Wk = nn.Linear(dmodel, dmodel, bias=False)
         self.Wq = nn.Linear(dmodel, dmodel, bias=False)
         self.Wv = nn.Linear(dmodel, dmodel, bias=False)
         self.nheads = nheads
         self.dk = dmodel // nheads
+        self.Wo = nn.Linear(dmodel, dmodel, bias=False)
         self.Att = ScaledDotProductAttention(sizeSeq, self.dk,
                                              dropout, not abspos)
 
@@ -71,6 +94,9 @@ class MultiHeadAttention(nn.Module):
         return x.view(bsz, bptt, h, dk).transpose(1, 2).contiguous().view(bsz * h, bptt, dk)
 
     def reverse_trans_(self, x):
+        if self.top_k > 0:
+            thresh_val_ = x.topk(self.top_k , sorted=True, dim=2)[0][:, :, -1].view(x.size(0), x.size(1), 1).detach()
+            x[x < thresh_val_] = 0
         bsz, bptt, h, dk = x.size(
             0) // self.nheads, x.size(1), self.nheads, self.dk
         return x.view(bsz, h, bptt, dk).transpose(1, 2).contiguous().view(bsz, bptt, h * dk)
@@ -79,7 +105,8 @@ class MultiHeadAttention(nn.Module):
         q = self.trans_(self.Wq(Q))
         k = self.trans_(self.Wk(K))
         v = self.trans_(self.Wv(V))
-        y = self.reverse_trans_(self.Att(q, k, v))
+        at = self.Att(q, k, v)
+        y = self.reverse_trans_(at)
         return self.Wo(y)
 
 
@@ -98,10 +125,11 @@ class FFNetwork(nn.Module):
 class TransformerLayer(nn.Module):
     def __init__(self, sizeSeq=32, dmodel=512, dff=2048,
                  dropout=0.1, nheads=8,
-                 abspos=False):
+                 abspos=False, top_k_attention=0):
         super(TransformerLayer, self).__init__()
         self.multihead = MultiHeadAttention(sizeSeq, dropout,
-                                            dmodel, nheads, abspos)
+                                            dmodel, nheads, abspos,
+                                            top_k=top_k_attention)
         self.ln_multihead = nn.LayerNorm(dmodel)
         self.ffnetwork = FFNetwork(dmodel, dmodel, dff, dropout)
         self.ln_ffnetwork = nn.LayerNorm(dmodel)
@@ -109,6 +137,29 @@ class TransformerLayer(nn.Module):
     def forward(self, x):
         y = self.ln_multihead(x + self.multihead(Q=x, K=x, V=x))
         return self.ln_ffnetwork(y + self.ffnetwork(y))
+
+
+class MultiClassifierTransformerHead(nn.Module):
+
+    def __init__(self, nclassifiers, sizeSeq=32, dmodel=512, dff=2048,
+                 dropout=0.1, nheads=8,
+                 abspos=False, top_k_attention=0):
+        super(MultiClassifierTransformerHead, self).__init__()
+        self.multihead = MultiHeadAttention(sizeSeq, dropout,
+                                            dmodel, nheads, abspos,
+                                            top_k=top_k_attention)
+        self.ln_multihead = nn.LayerNorm(dmodel)
+        self.ffnetwork = FFNetwork(dmodel, dmodel * nclassifiers,dff,  dropout)
+        self.ln_ffnetwork = nn.LayerNorm(dmodel)
+        self.nclassifiers = nclassifiers
+        self.dout = dmodel
+
+    def forward(self, x):
+        y = self.ln_multihead(x + self.multihead(Q=x, K=x, V=x))
+        B, S, _ = y.size()
+        x = self.ffnetwork(y)
+        y = y.view(B, S, 1, self.dout).expand(B, S, self.nclassifiers, self.dout)
+        return self.ln_ffnetwork(x.view(B, S, self.nclassifiers, self.dout) + y)
 
 
 class StaticPositionEmbedding(nn.Module):
@@ -126,6 +177,7 @@ class StaticPositionEmbedding(nn.Module):
         return x + self.pe[:, :x.size(1), :]
 
 
+
 def buildTransformerAR(dimEncoded,    # Output dimension of the encoder
                        nLayers,       # Number of transformer layers
                        sizeSeq,       # Expected size of the input sequence
@@ -136,4 +188,30 @@ def buildTransformerAR(dimEncoded,    # Output dimension of the encoder
     layerSequence += [TransformerLayer(sizeSeq=sizeSeq,
                                        dmodel=dimEncoded, abspos=abspos)
                       for i in range(nLayers)]
+    return nn.Sequential(*layerSequence)
+
+
+def buildMultHeadTransformerAR(dimEncoded,    # Output dimension of the encoder
+                               nLayers,       # Number of transformer layers
+                               sizeSeq,       # Expected size of the input sequence
+                               abspos,
+                               nHeads,
+                               top_k_attention=0):
+
+    layerSequence = []
+    if abspos:
+        layerSequence += [StaticPositionEmbedding(sizeSeq, dimEncoded)]
+
+    layerSequence += [TransformerLayer(sizeSeq=sizeSeq,
+                                       dmodel=dimEncoded,
+                                       abspos=abspos,
+                                       top_k_attention=top_k_attention)
+
+                      for i in range(nLayers - 1)]
+    layerSequence += [MultiClassifierTransformerHead(nHeads,
+                                                    dmodel=dimEncoded,
+                                                    sizeSeq=sizeSeq,
+                                                    abspos=abspos,
+                                                    top_k_attention=top_k_attention)]
+
     return nn.Sequential(*layerSequence)

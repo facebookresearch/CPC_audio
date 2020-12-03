@@ -12,7 +12,7 @@ Moreover, this code also implements all the evaluation metrics used in the paper
 The installation is a tiny bit involved due to the torch-audio dependency.
 
 0/ Clone the repo:
-`git clone git@github.com:facebookresearch/CPC_audio.git && cd CPC_audio`
+`git clone git@github.com:facebookresearch/CPC_torch.git && cd CPC_torch`
 
 1/ Install libraries which would be required for torch-audio https://github.com/pytorch/audio :
  * MacOS: `brew install sox`
@@ -61,7 +61,7 @@ PATH_AUDIO_FILES
           │   seq_22.{$EXTENSION}
 ```
 
-Please note that each speaker directory can contain an arbitrary number of subdirectories: the speaker label will always be retrieved from the top one. The name of the files isn't relevant. For a concrete example, you can look at the organization of the [Librispeech](http://www.openslr.org/12/) dataset.
+Please note that each speaker directory can contain an arbitrary number of subdirectories: the speaker label will always be retrieved from the top one.
 
 - $PATH_CHECKPOINT_DIR in the directory where the checkpoints will be saved
 - $TRAINING_SET is a path to a .txt file containing the list of the training sequences (see [here](https://drive.google.com/drive/folders/1BhJ2umKH3whguxMwifaKtSra0TgAbtfb) for example)
@@ -174,42 +174,23 @@ python cpc/eval/common_voices_eval.py per $OUTPUT_DIR --pathVal $PATH_COMMON_VOI
 
 ## torch hub
 
-To begin download the common voices datasets [here](https://voice.mozilla.org/en/datasets), you will also need to download our phonem annotations and our train / val / test splits for each language [here](https://dl.fbaipublicfiles.com/cpc_audio/common_voices_splits.tar.gz). Then unzip your data at PATH_COMMON_VOICES.
-Unfortunately, the audio files in common voices don't have the same sampling rate as in Librispeech. Thus you'll need to convert them into 16kH audio using the command:
-
-```bash
-DIR_CC=$PATH_COMMON_VOICES
-for x in fr zh it ru nl sv es tr tt ky; do python cpc/eval/utils/adjust_sample_rate.py ${DIR_CC}/${x}/clips ${DIR_CC}/${x}/validated_phones_reduced.txt ${DIR_CC}/${x}/clips_16k; done
-```
-
-You can now run the experiments described in the paper. To begin, you must train the linear classifier. You will find below the instructions for the Spanish dataset: you can run the experiments on any other dataset in the same fashion.
-
-#### Frozen features
-
-To run the training on frozen features with the one hour dataset, just run:
-
-```bash
-python cpc/eval/common_voices_eval.py train $PATH_COMMON_VOICES/es/clips_16k $PATH_COMMON_VOICES/es/validated_phones_reduced.txt $CHECKPOINT_TO_TEST --pathTrain $PATH_COMMON_VOICES/es/trainSeqs_1.0_uniform_new_version.txt  --pathVal $PATH_COMMON_VOICES/es/trainSeqs_1.0_uniform_new_version.txt --freeze -o $OUTPUT_DIR
-```
-
-#### Fine tuning
-
-The command is quite similar to run the fine-tuning experiments on the 5 hours dataset. For example in French you need to run:
-```bash
-python cpc/eval/common_voices_eval.py train $PATH_COMMON_VOICES/es/clips_16k $PATH_COMMON_VOICES/es/validated_phones_reduced.txt $CHECKPOINT_TO_TEST --pathTrain $PATH_COMMON_VOICES/es/trainSeqs_5.0_uniform_new_version.txt --pathVal $PATH_COMMON_VOICES/es/trainSeqs_5.0_uniform_new_version.txt --freeze -o $OUTPUT_DIR
-```
-
-#### PER
-
-Once the training is done, you can compute the associated phone error rate (PER) on the test subset. To do so, just run:
-
-```bash
-python cpc/eval/common_voices_eval.py per $OUTPUT_DIR --pathVal $PATH_COMMON_VOICES/es/testSeqs_uniform_new_version.txt --pathPhone $PATH_COMMON_VOICES/es/validated_phones_reduced.txt
-```
-
-## torch hub
-
 This model is also available via [torch.hub](https://pytorch.org/docs/stable/hub.html). For more details, have a look at hubconf.py.
+
+## Running a grid-search over hyper-parameters (FAIR only)
+
+This feature requires submitit, which can be installed by running:
+`pip install git+ssh://git@github.com/fairinternal/submitit@master#egg=submitit`
+
+Premption is not yet supported, hence it is advised to use either `dev` or `priority` partitions.
+
+Running a grid-search is as simple as
+```json
+python grid_search.py --sweep=cpc/utils/small_grid.json --name=test --partition=dev
+```
+where `cpc/utils/small_grid.json` is a json file defining grid (as in [example](utils/small_grid.json)), `name` is the experiment name.
+The resulting models and stdout/stderr streams of the runs would appear in `~/cpc/<name>/<data-time>/`.
+
+You can use the `--dry_run` parameter which prevents the jobs from being actually launched.
 
 ## Citations
 Please consider citing this project in your publications if it helps your research.

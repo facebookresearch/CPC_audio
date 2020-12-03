@@ -289,6 +289,62 @@ class CPCModel(nn.Module):
         return cFeature, encodedData, label
 
 
+class CPCBertModel(CPCModel):
+
+    def __init__(self,
+                 encoder,
+                 AR,
+                 nMaskSentence=2,
+                 blockSize=12):
+
+        super(CPCBertModel, self).__init__(encoder, AR)
+        self.blockSize = blockSize
+        self.nMaskSentence = nMaskSentence
+        self.supervised = False
+
+    def getMask(self, batchData):
+
+        batchSize, seqSize, c = batchData.size()
+        maskLabel = torch.randint(0, seqSize // self.blockSize,
+                                  (self.nMaskSentence * batchSize, 1))
+        maskLabel *= self.blockSize
+
+        baseX = torch.arange(0, self.blockSize, dtype=torch.long)
+        baseX = baseX.expand(self.nMaskSentence * batchSize, self.blockSize)
+        maskLabel = maskLabel + baseX
+        maskLabel = maskLabel.view(-1)
+
+        baseY = torch.arange(0, batchSize,
+                             dtype=torch.long).view(-1, 1) * seqSize
+        baseY = baseY.expand(batchSize,
+                             self.nMaskSentence *
+                             self.blockSize).contiguous().view(-1)
+        maskLabel = maskLabel + baseY
+        outLabels = torch.zeros(batchSize * seqSize,
+                                dtype=torch.uint8)
+        outLabels[maskLabel] = 1
+
+        outLabels = outLabels.view(batchSize, seqSize)
+
+        return outLabels
+
+    def forward(self, batchData, label):
+
+        fullEncoded = self.gEncoder(batchData).permute(0, 2, 1)
+
+        # Sample random blocks of data
+        if not self.supervised:
+            maskLabels = self.getMask(fullEncoded)
+            partialEncoded = fullEncoded.clone()
+            partialEncoded[maskLabels] = 0
+            cFeature = self.gAR(partialEncoded)
+            return cFeature, fullEncoded, maskLabels.cuda()
+
+        else:
+            cFeature = self.gAR(fullEncoded)
+            return cFeature, fullEncoded, label
+
+
 class ConcatenatedModel(nn.Module):
 
     def __init__(self, model_list):

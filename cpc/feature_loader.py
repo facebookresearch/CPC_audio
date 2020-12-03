@@ -9,7 +9,7 @@ import json
 import argparse
 from .cpc_default_config import get_default_cpc_config
 from .dataset import parseSeqLabels
-from .model import CPCModel, ConcatenatedModel
+from .model import CPCModel, ConcatenatedModel, CPCBertModel
 
 
 class FeatureModule(torch.nn.Module):
@@ -24,18 +24,54 @@ class FeatureModule(torch.nn.Module):
         self.featureMaker = featureMaker
         self.collapse = collapse
 
+    @property
+    def out_feature_dim(self):
+        if self.get_encoded:
+            return self.featureMaker.gEncoder.getDimOutput()
+        return self.featureMaker.gAR.getDimOutput()
+
     def getDownsamplingFactor(self):
         return self.featureMaker.gEncoder.DOWNSAMPLING
 
     def forward(self, data):
 
         batchAudio, label = data
+        if len(batchAudio.size()) == 4:
+            batchAudio = batchAudio[:, 0]
         cFeature, encoded, _ = self.featureMaker(batchAudio.cuda(), label)
         if self.get_encoded:
             cFeature = encoded
         if self.collapse:
             cFeature = cFeature.contiguous().view(-1, cFeature.size(2))
         return cFeature
+
+
+class CPCModule(torch.nn.Module):
+
+    def __init__(self,
+                 feature_maker,
+                 cpc_criterion,
+                 main_distance_only=False,
+                 n_pred = -1):
+
+        super(CPCModule, self).__init__()
+        self.feature_maker = feature_maker
+        self.cpc_criterion = cpc_criterion
+        self.n_pred = n_pred
+        self.main_distance_only = main_distance_only
+
+    def getDownsamplingFactor(self):
+        return self.feature_maker.gEncoder.DOWNSAMPLING
+
+    def forward(self, data):
+        batchAudio, label = data
+        cFeature, encoded, label = self.feature_maker(batchAudio.cuda(), label)
+        if self.main_distance_only:
+            predictions = self.cpc_criterion.getCosineDistances(cFeature, encoded)[self.n_pred]
+        else:
+            predictions = self.cpc_criterion.getPrediction(cFeature, encoded, label)[0][self.n_pred]
+            predictions = torch.nn.functional.softmax(predictions, dim=1)
+        return predictions
 
 
 class ModelPhoneCombined(torch.nn.Module):
@@ -71,6 +107,38 @@ class ModelPhoneCombined(torch.nn.Module):
         return pred
 
 
+class ModelClusterCombined(torch.nn.Module):
+    r"""
+    Concatenates a CPC feature maker and a clustering module.
+    """
+
+    def __init__(self, model, cluster, nk, outFormat):
+
+        if outFormat not in ['oneHot', 'int', 'softmax']:
+            raise ValueError(f'Invalid output format {outFormat}')
+
+        super(ModelClusterCombined, self).__init__()
+        self.model = model
+        self.cluster = cluster
+        self.nk = nk
+        self.outFormat = outFormat
+
+    def getDownsamplingFactor(self):
+        return self.model.getDownsamplingFactor()
+
+    def forward(self, data):
+        c_feature = self.model(data)
+        pred = self.cluster(c_feature)
+        if self.outFormat == 'oneHot':
+            pred = pred.min(dim=2)[1]
+            pred = toOneHot(pred, self.nk)
+        elif self.outFormat == 'int':
+            pred = pred.min(dim=2)[1]
+        else:
+            pred = torch.nn.functional.softmax(-pred, dim=2)
+        return pred
+
+
 def loadArgs(args, locArgs, forbiddenAttr=None):
     for k, v in vars(locArgs).items():
         if forbiddenAttr is not None:
@@ -81,7 +149,7 @@ def loadArgs(args, locArgs, forbiddenAttr=None):
 
 
 def loadSupervisedCriterion(pathCheckpoint):
-    from .criterion import CTCPhoneCriterion, PhoneCriterion
+    from cpc.criterion import CTCPhoneCriterion, PhoneCriterion
 
     *_, args = getCheckpointData(os.path.dirname(pathCheckpoint))
     _, nPhones = parseSeqLabels(args.pathPhone)
@@ -137,9 +205,13 @@ def getEncoder(args):
 def getAR(args):
     if args.arMode == 'transformer':
         from .transformers import buildTransformerAR
-        arNet = buildTransformerAR(args.hiddenEncoder, 1,
+        arNet = buildTransformerAR(args.hiddenEncoder, args.nLevelsGRU,
                                    args.sizeWindow // 160, args.abspos)
         args.hiddenGar = args.hiddenEncoder
+    elif args.cpc_mode == "bert":
+        from .model import BiDIRARTangled
+        arNet = BiDIRARTangled(args.hiddenEncoder, args.hiddenGar,
+                               args.nLevelsGRU)
     elif args.arMode == 'no_ar':
         from .model import NoAr
         arNet = NoAr()
@@ -153,26 +225,37 @@ def getAR(args):
     return arNet
 
 
-def loadModel(pathCheckpoints, loadStateDict=True):
+def loadModel(pathCheckpoints, loadStateDict=True, updateConfig=None):
     models = []
     hiddenGar, hiddenEncoder = 0, 0
     for path in pathCheckpoints:
         print(f"Loading checkpoint {path}")
         _, _, locArgs = getCheckpointData(os.path.dirname(path))
-
         doLoad = locArgs.load is not None and \
             (len(locArgs.load) > 1 or
              os.path.dirname(locArgs.load[0]) != os.path.dirname(path))
 
+        if updateConfig is not None and not doLoad:
+            print(f"Updating the configuration file with ")
+            print(f'{json.dumps(vars(updateConfig), indent=4, sort_keys=True)}')
+            loadArgs(locArgs, updateConfig)
+
         if doLoad:
-            m_, hg, he = loadModel(locArgs.load, loadStateDict=False)
+            m_, hg, he = loadModel(locArgs.load,
+                                   loadStateDict=False,
+                                   updateConfig=updateConfig)
             hiddenGar += hg
             hiddenEncoder += he
         else:
             encoderNet = getEncoder(locArgs)
 
             arNet = getAR(locArgs)
-            m_ = CPCModel(encoderNet, arNet)
+            if locArgs.cpc_mode == "bert":
+                m_ = CPCBertModel(encoderNet, arNet,
+                                  blockSize=locArgs.nPredicts)
+                m_.supervised = locArgs.supervised
+            else:
+                m_ = CPCModel(encoderNet, arNet)
 
         if loadStateDict:
             print(f"Loading the state dict at {path}")
@@ -194,6 +277,8 @@ def get_module(i_module):
     if isinstance(i_module, torch.nn.DataParallel):
         return get_module(i_module.module)
     if isinstance(i_module, FeatureModule):
+        return get_module(i_module.featureMaker)
+    if isinstance(i_module, torch.nn.parallel.DistributedDataParallel):
         return get_module(i_module.module)
     return i_module
 
