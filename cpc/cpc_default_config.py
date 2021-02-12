@@ -25,6 +25,10 @@ def set_default_cpc_config(parser):
     
     group.add_argument('--CPCCTC', action='store_true')
     group.add_argument('--CPCCTCNumMatched', type=int, default=16)
+    group.add_argument('--CPCCTCSkipBeg', type=int, default=0)
+    group.add_argument('--CPCCTCSkipEnd', type=int, default=0)
+    group.add_argument('--CPCCTCSelfLoop', action='store_true')
+
     
     group.add_argument('--negativeSamplingExt', type=int, default=128,
                        help='Number of negative samples to take.')

@@ -35,6 +35,9 @@ def getCriterion(args, downsampling, nSpeakers, nPhones):
                                                         args.hiddenGar,
                                                         args.hiddenEncoder,
                                                         args.negativeSamplingExt,
+                                                        allowed_skips_beg=args.CPCCTCSkipBeg,
+                                                        allowed_skips_end=args.CPCCTCSkipEnd,
+                                                        predict_self_loop=args.CPCCTCSelfLoop,
                                                         mode=args.cpc_mode,
                                                         rnnMode=args.rnnMode,
                                                         dropout=args.dropout,
@@ -243,6 +246,8 @@ def main(args):
     utils.set_seed(args.random_seed)
     logs = {"epoch": [], "iter": [], "saveStep": args.save_step}
     loadOptimizer = False
+    os.makedirs(args.pathCheckpoint, exist_ok=True)
+    json.dump(vars(args), open(os.path.join(args.pathCheckpoint, 'checkpoint_args.json'), 'wt'))
     if args.pathCheckpoint is not None and not args.restart:
         cdata = fl.getCheckpointData(args.pathCheckpoint)
         if cdata is not None:
@@ -384,11 +389,14 @@ def main(args):
         for i in range(len(logs["epoch"])):
             scheduler.step()
 
+    print("cpcModel", cpcModel)
+    print("cpcCriterion", cpcCriterion)
+
     cpcModel = torch.nn.DataParallel(cpcModel,
                                      device_ids=range(args.nGPU)).cuda()
     cpcCriterion = torch.nn.DataParallel(cpcCriterion,
                                          device_ids=range(args.nGPU)).cuda()
-
+    
     run(trainDataset,
         valDataset,
         batchSize,

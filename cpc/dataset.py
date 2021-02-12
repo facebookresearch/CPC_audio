@@ -11,6 +11,7 @@ import soundfile as sf
 from pathlib import Path
 from copy import deepcopy
 from torch.multiprocessing import Pool
+from multiprocessing import dummy
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import Sampler, BatchSampler
 
@@ -50,6 +51,7 @@ class AudioBatchData(Dataset):
         self.sizeWindow = sizeWindow
         self.seqNames = [(s, self.dbPath / x) for s, x in seqNames]
         self.reload_pool = Pool(nProcessLoader)
+        # self.reload_pool = dummy.Pool(1) #Pool(nProcessLoader)
 
         self.prepare()
         self.speakers = list(range(nSpeakers))
@@ -263,7 +265,7 @@ def loadFile(data):
     seqName = fullPath.stem
     # Due to some issues happening when combining torchaudio.load
     # with torch.multiprocessing we use soundfile to load the data
-    seq = torch.tensor(sf.read(fullPath)[0]).float()
+    seq = torch.tensor(sf.read(str(fullPath))[0]).float()
     if len(seq.size()) == 2:
         seq = seq.mean(dim=1)
     return speaker, seqName, seq

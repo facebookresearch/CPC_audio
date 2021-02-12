@@ -110,6 +110,15 @@ def getCheckpointData(pathDir):
     data = os.path.join(pathDir, checkpoints[-1])
     with open(os.path.join(pathDir, 'checkpoint_logs.json'), 'rb') as file:
         logs = json.load(file)
+    
+    # args_json = os.path.join(pathDir, 'checkpoint_args.json')
+    # try:
+    #     with open(args_json, 'rb') as file:
+    #         args = json.load(file)
+    #     args = argparse.Namespace(**args)    
+    # except Exception as e:
+    #     print("WARNING: failed to load {args_json}: {e}")
+    #     args = argparse.Namespace()
 
     with open(os.path.join(pathDir, 'checkpoint_args.json'), 'rb') as file:
         args = json.load(file)

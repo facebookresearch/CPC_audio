@@ -16,16 +16,19 @@ class _SOFT_ALIGN(autograd.Function):
 
     """
     @staticmethod
-    def _alignment_cost(log_probs):
+    def _alignment_cost(log_probs, allowed_skips_beg, allowed_skips_end):
         # log_probs is BS x WIN_LEN x NUM_PREDS
         bs, win_len, num_preds = log_probs.size()
         assert win_len >=  num_preds
+        padded_log_probs = F.pad(
+            log_probs, (0, 0, allowed_skips_beg, allowed_skips_end), "constant", 0)
+        padded_win_len = win_len + allowed_skips_beg + allowed_skips_end
         fake_ctc_labels = torch.arange(1, num_preds+1, dtype=torch.int).expand(bs, num_preds)
 
         # append impossible BLANK probabilities
         ctc_log_probs = torch.cat((
-            torch.empty(win_len, bs, 1, device=log_probs.device).fill_(-1000),
-            log_probs.permute(1, 0, 2).contiguous()
+            torch.empty(padded_win_len, bs, 1, device=log_probs.device).fill_(-1000),
+            padded_log_probs.permute(1, 0, 2).contiguous()
         ), 2)
         # Now ctc_log_probs is win_size x BS x (num_preds + 1)
         assert ctc_log_probs.is_contiguous()
@@ -38,17 +41,18 @@ class _SOFT_ALIGN(autograd.Function):
         losses = F.ctc_loss(
             ctc_log_probs, 
             fake_ctc_labels,
-            torch.empty(bs, dtype=torch.int).fill_(win_len),
+            torch.empty(bs, dtype=torch.int).fill_(padded_win_len),
             torch.empty(bs, dtype=torch.int).fill_(num_preds),
             reduction='none')
         losses = losses - log_sum_exps.squeeze(2).sum(0)
         return losses
 
     @staticmethod
-    def forward(ctx, log_probs):
+    def forward(ctx, log_probs, allowed_skips_beg=0, allowed_skips_end=0):
         log_probs = log_probs.detach().requires_grad_()
         with torch.enable_grad():
-            losses = _SOFT_ALIGN._alignment_cost(log_probs)
+            losses = _SOFT_ALIGN._alignment_cost(
+                log_probs, allowed_skips_beg, allowed_skips_end)
             losses.sum().backward()
             grads = log_probs.grad.detach()
         _, alignment = grads.min(-1)
@@ -60,7 +64,7 @@ class _SOFT_ALIGN(autograd.Function):
     def backward(ctx, grad_output, _):
         grads, = ctx.saved_tensors
         grad_output = grad_output.to(grads.device)
-        return grads * grad_output.view(-1, 1, 1)
+        return grads * grad_output.view(-1, 1, 1), None, None
 
 soft_align = _SOFT_ALIGN.apply
 
@@ -148,12 +152,17 @@ class CPCUnsupersivedCriterion(BaseCriterion):
                  dimOutputAR,           # Dimension of G_ar
                  dimOutputEncoder,      # Dimension of the convolutional net
                  negativeSamplingExt,   # Number of negative samples to draw
+                 allowed_skips_beg=0,     # number of predictions that we can skip at the beginning
+                 allowed_skips_end=0,     # number of predictions that we can skip at the end
+                 predict_self_loop=False, # always predict a repetition of the first symbol
                  mode=None,
                  rnnMode=False,
                  dropout=False,
                  speakerEmbedding=0,
                  nSpeakers=0,
                  sizeInputSeq=128):
+
+        print ("!!!!!!!!!USING CPCCTC!!!!!!!!!!!!")
 
         super(CPCUnsupersivedCriterion, self).__init__()
         if speakerEmbedding > 0:
@@ -171,6 +180,9 @@ class CPCUnsupersivedCriterion(BaseCriterion):
             dropout=dropout, sizeInputSeq=sizeInputSeq - nMatched)
         self.nPredicts = nPredicts
         self.negativeSamplingExt = negativeSamplingExt
+        self.allowed_skips_beg = allowed_skips_beg
+        self.allowed_skips_end = allowed_skips_end
+        self.predict_self_loop = predict_self_loop
 
         if mode not in [None, "reverse"]:
             raise ValueError("Invalid mode")
@@ -248,6 +260,12 @@ class CPCUnsupersivedCriterion(BaseCriterion):
 
         # Predictions, BS x Len x D x nPreds
         predictions = self.wPrediction(cFeature)
+        nPredicts = self.nPredicts
+        if self.predict_self_loop:
+            predictions = torch.cat(
+                (cFeature.unsqueeze(-1), predictions), -1
+            )
+            nPredicts += 1
         #predictions = torch.cat(predictions, 1).permute(0, 2, 3, 1)
 
         # predictions = self.wPrediction(cFeature)
@@ -277,10 +295,10 @@ class CPCUnsupersivedCriterion(BaseCriterion):
                          neg_log_tot_scores.expand_as(pos_log_scores)), 0), 
             dim=0)[0]
         
-        log_scores = log_scores.view(batchSize*windowSize, self.nMatched, self.nPredicts)
-        losses, aligns = soft_align(log_scores)
+        log_scores = log_scores.view(batchSize*windowSize, self.nMatched, nPredicts)
+        losses, aligns = soft_align(log_scores, self.allowed_skips_beg, self.allowed_skips_end)
 
-        pos_is_selected = (pos_log_scores > neg_log_scores.max(2, keepdim=True)[0]).view(batchSize*windowSize, self.nMatched, self.nPredicts)
+        pos_is_selected = (pos_log_scores > neg_log_scores.max(2, keepdim=True)[0]).view(batchSize*windowSize, self.nMatched, nPredicts)
 
         # This is approximate Viterbi alignment loss and accurracy
         outLosses = -torch.gather(log_scores, 2, aligns.unsqueeze(-1)).squeeze(-1).float().mean(0, keepdim=True)
