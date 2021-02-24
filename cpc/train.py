@@ -14,6 +14,7 @@ import psutil
 import sys
 
 import cpc.criterion as cr
+import cpc.criterion.soft_align as sa
 import cpc.model as model
 import cpc.utils.misc as utils
 import cpc.feature_loader as fl
@@ -28,16 +29,33 @@ def getCriterion(args, downsampling, nSpeakers, nPhones):
             cpcCriterion = cr.NoneCriterion()
         else:
             sizeInputSeq = (args.sizeWindow // downsampling)
-            cpcCriterion = cr.CPCUnsupersivedCriterion(args.nPredicts,
-                                                       args.hiddenGar,
-                                                       args.hiddenEncoder,
-                                                       args.negativeSamplingExt,
-                                                       mode=args.cpc_mode,
-                                                       rnnMode=args.rnnMode,
-                                                       dropout=args.dropout,
-                                                       nSpeakers=nSpeakers,
-                                                       speakerEmbedding=args.speakerEmbedding,
-                                                       sizeInputSeq=sizeInputSeq)
+            if args.CPCCTC:
+                cpcCriterion = sa.CPCUnsupersivedCriterion(args.nPredicts,
+                                                        args.CPCCTCNumMatched,
+                                                        args.hiddenGar,
+                                                        args.hiddenEncoder,
+                                                        args.negativeSamplingExt,
+                                                        allowed_skips_beg=args.CPCCTCSkipBeg,
+                                                        allowed_skips_end=args.CPCCTCSkipEnd,
+                                                        predict_self_loop=args.CPCCTCSelfLoop,
+                                                        mode=args.cpc_mode,
+                                                        rnnMode=args.rnnMode,
+                                                        dropout=args.dropout,
+                                                        nSpeakers=nSpeakers,
+                                                        speakerEmbedding=args.speakerEmbedding,
+                                                        sizeInputSeq=sizeInputSeq)
+
+            else:
+                cpcCriterion = cr.CPCUnsupersivedCriterion(args.nPredicts,
+                                                        args.hiddenGar,
+                                                        args.hiddenEncoder,
+                                                        args.negativeSamplingExt,
+                                                        mode=args.cpc_mode,
+                                                        rnnMode=args.rnnMode,
+                                                        dropout=args.dropout,
+                                                        nSpeakers=nSpeakers,
+                                                        speakerEmbedding=args.speakerEmbedding,
+                                                        sizeInputSeq=sizeInputSeq)
     elif args.pathPhone is not None:
         if not args.CTC:
             cpcCriterion = cr.PhoneCriterion(dimFeatures,
@@ -228,6 +246,8 @@ def main(args):
     utils.set_seed(args.random_seed)
     logs = {"epoch": [], "iter": [], "saveStep": args.save_step}
     loadOptimizer = False
+    os.makedirs(args.pathCheckpoint, exist_ok=True)
+    json.dump(vars(args), open(os.path.join(args.pathCheckpoint, 'checkpoint_args.json'), 'wt'))
     if args.pathCheckpoint is not None and not args.restart:
         cdata = fl.getCheckpointData(args.pathCheckpoint)
         if cdata is not None:
@@ -369,11 +389,14 @@ def main(args):
         for i in range(len(logs["epoch"])):
             scheduler.step()
 
+    print("cpcModel", cpcModel)
+    print("cpcCriterion", cpcCriterion)
+
     cpcModel = torch.nn.DataParallel(cpcModel,
                                      device_ids=range(args.nGPU)).cuda()
     cpcCriterion = torch.nn.DataParallel(cpcCriterion,
                                          device_ids=range(args.nGPU)).cuda()
-
+    
     run(trainDataset,
         valDataset,
         batchSize,

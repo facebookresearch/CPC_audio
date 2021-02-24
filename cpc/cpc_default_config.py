@@ -22,6 +22,14 @@ def set_default_cpc_config(parser):
                        help='Hidden dimension of the auto-regressive network')
     group.add_argument('--nPredicts', type=int, default=12,
                        help='Number of steps to predict.')
+    
+    group.add_argument('--CPCCTC', action='store_true')
+    group.add_argument('--CPCCTCNumMatched', type=int, default=16)
+    group.add_argument('--CPCCTCSkipBeg', type=int, default=0)
+    group.add_argument('--CPCCTCSkipEnd', type=int, default=0)
+    group.add_argument('--CPCCTCSelfLoop', action='store_true')
+
+    
     group.add_argument('--negativeSamplingExt', type=int, default=128,
                        help='Number of negative samples to take.')
     group.add_argument('--learningRate', type=float, default=2e-4)
