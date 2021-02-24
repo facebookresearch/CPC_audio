@@ -38,6 +38,7 @@ def getCriterion(args, downsampling, nSpeakers, nPhones):
                                                         allowed_skips_beg=args.CPCCTCSkipBeg,
                                                         allowed_skips_end=args.CPCCTCSkipEnd,
                                                         predict_self_loop=args.CPCCTCSelfLoop,
+                                                        limit_negs_in_batch=args.limitNegsInBatch,
                                                         mode=args.cpc_mode,
                                                         rnnMode=args.rnnMode,
                                                         dropout=args.dropout,
