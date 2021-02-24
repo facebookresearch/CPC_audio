@@ -155,6 +155,7 @@ class CPCUnsupersivedCriterion(BaseCriterion):
                  allowed_skips_beg=0,     # number of predictions that we can skip at the beginning
                  allowed_skips_end=0,     # number of predictions that we can skip at the end
                  predict_self_loop=False, # always predict a repetition of the first symbol
+                 limit_negs_in_batch=None,
                  mode=None,
                  rnnMode=False,
                  dropout=False,
@@ -183,6 +184,7 @@ class CPCUnsupersivedCriterion(BaseCriterion):
         self.allowed_skips_beg = allowed_skips_beg
         self.allowed_skips_end = allowed_skips_end
         self.predict_self_loop = predict_self_loop
+        self.limit_negs_in_batch = limit_negs_in_batch
 
         if mode not in [None, "reverse"]:
             raise ValueError("Invalid mode")
@@ -197,9 +199,22 @@ class CPCUnsupersivedCriterion(BaseCriterion):
         negExt = encodedData.contiguous().view(-1, dimEncoded)
         # Draw nNegativeExt * batchSize negative samples anywhere in the batch
         batchIdx = torch.randint(low=0, high=batchSize,
-                                 size=(self.negativeSamplingExt
-                                       * windowSize * batchSize, ),
+                                 size=(batchSize, 
+                                       self.negativeSamplingExt * windowSize, ),
                                  device=encodedData.device)
+        if self.limit_negs_in_batch:
+            # sample nagatives from a small set of entries in minibatch
+            batchIdx = torch.remainder(batchIdx, self.limit_negs_in_batch)
+            batchBaseIdx = torch.arange(0, batchSize, device=encodedData.device)
+            batchBaseIdx -= torch.remainder(batchBaseIdx, self.limit_negs_in_batch)
+            batchIdx += batchBaseIdx.unsqueeze(1) 
+            # we can get too large, if batchsize is not divisible by limit_negs_in_batch
+            batchIdx = torch.remainder(batchIdx, batchSize)
+
+            # if not  ((batchIdx.max().item() < batchSize) and 
+            #          (batchIdx.min().item() >= 0)):
+            #     import pdb; pdb.set_trace()
+        batchIdx = batchIdx.contiguous().view(-1)
 
         seqIdx = torch.randint(low=1, high=nNegativeExt,
                                size=(self.negativeSamplingExt
