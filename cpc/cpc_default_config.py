@@ -28,6 +28,8 @@ def set_default_cpc_config(parser):
     group.add_argument('--CPCCTCSkipBeg', type=int, default=0)
     group.add_argument('--CPCCTCSkipEnd', type=int, default=0)
     group.add_argument('--CPCCTCSelfLoop', action='store_true')
+    group.add_argument('--limitNegsInBatch', type=int, default=0,
+                       help='Limit the number of different seqs from whithc neg samples are taken.')
 
     
     group.add_argument('--negativeSamplingExt', type=int, default=128,
