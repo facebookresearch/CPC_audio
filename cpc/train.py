@@ -38,6 +38,7 @@ def getCriterion(args, downsampling, nSpeakers, nPhones):
                                                         allowed_skips_beg=args.CPCCTCSkipBeg,
                                                         allowed_skips_end=args.CPCCTCSkipEnd,
                                                         predict_self_loop=args.CPCCTCSelfLoop,
+                                                        learn_blank=args.CPCCTCLearnBlank,
                                                         limit_negs_in_batch=args.limitNegsInBatch,
                                                         mode=args.cpc_mode,
                                                         rnnMode=args.rnnMode,
@@ -242,6 +243,10 @@ def run(trainDataset,
 
 
 def main(args):
+    # import ptvsd
+    # ptvsd.enable_attach(('0.0.0.0', 7309))
+    # print("Attach debugger now")
+    # ptvsd.wait_for_attach()
     args = parseArgs(args)
 
     utils.set_seed(args.random_seed)

@@ -108,8 +108,12 @@ def getCheckpointData(pathDir):
         return None
     checkpoints.sort(key=lambda x: int(os.path.splitext(x[11:])[0]))
     data = os.path.join(pathDir, checkpoints[-1])
-    with open(os.path.join(pathDir, 'checkpoint_logs.json'), 'rb') as file:
-        logs = json.load(file)
+    logs = {}
+    try:
+        with open(os.path.join(pathDir, 'checkpoint_logs.json'), 'rb') as file:
+            logs = json.load(file)
+    except Exception as e:
+        print(f"WARNING: failed to load log: {e}")
     
     # args_json = os.path.join(pathDir, 'checkpoint_args.json')
     # try:
