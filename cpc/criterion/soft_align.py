@@ -157,7 +157,9 @@ class CPCUnsupersivedCriterion(BaseCriterion):
                  allowed_skips_beg=0,     # number of predictions that we can skip at the beginning
                  allowed_skips_end=0,     # number of predictions that we can skip at the end
                  predict_self_loop=False, # always predict a repetition of the first symbol
-                 learn_blank=False,
+                 no_negs_in_match_window=False,  # prevent sampling negatives from the matching window
+                 learn_blank=False,       # try to use the blank symbol
+                 masq_rules="",
                  limit_negs_in_batch=None,
                  mode=None,
                  rnnMode=False,
@@ -179,6 +181,7 @@ class CPCUnsupersivedCriterion(BaseCriterion):
 
         
         self.nMatched = nMatched
+        self.no_negs_in_match_window = no_negs_in_match_window
         self.wPrediction = PredictionNetwork(
             nPredicts, dimOutputAR, dimOutputEncoder, rnnMode=rnnMode,
             dropout=dropout, sizeInputSeq=sizeInputSeq - nMatched)
@@ -193,6 +196,16 @@ class CPCUnsupersivedCriterion(BaseCriterion):
         self.allowed_skips_end = allowed_skips_end
         self.predict_self_loop = predict_self_loop
         self.limit_negs_in_batch = limit_negs_in_batch
+
+        if masq_rules:
+            masq_buffer = torch.zeros(self.nMatched, self.nPredicts)
+            for rule in masq_rules.split(','):
+                a,b,c,d = [int(a) if a.lower() != "none" else None for a in rule.split(':')]
+                masq_buffer[a:b,c:d] = 1
+            print("!!!MasqBuffer: ", masq_buffer)
+            self.register_buffer("masq_buffer", masq_buffer.unsqueeze(0))
+        else:
+            self.register_buffer("masq_buffer", None)
 
         if mode not in [None, "reverse"]:
             raise ValueError("Invalid mode")
@@ -224,7 +237,11 @@ class CPCUnsupersivedCriterion(BaseCriterion):
             #     import pdb; pdb.set_trace()
         batchIdx = batchIdx.contiguous().view(-1)
 
-        seqIdx = torch.randint(low=1, high=nNegativeExt,
+        if self.no_negs_in_match_window:
+            idx_low = self.nMatched  # forbid sampling negatives in the prediction window
+        else:
+            idx_low = 1  # just forbid sampling own index for negative
+        seqIdx = torch.randint(low=idx_low, high=nNegativeExt,
                                size=(self.negativeSamplingExt
                                      * windowSize * batchSize, ),
                                device=encodedData.device)
@@ -330,6 +347,11 @@ class CPCUnsupersivedCriterion(BaseCriterion):
             dim=0)[0]
         
         log_scores = log_scores.view(batchSize*windowSize, self.nMatched, nPredicts)
+        if self.masq_buffer is not None:
+            masq_buffer = self.masq_buffer
+            if extra_preds:
+                masq_buffer = torch.cat([masq_buffer[:, :, :1]] * (len(extra_preds) - 1) + [masq_buffer], dim=2)
+            log_scores = log_scores.masked_fill(masq_buffer > 0, -1000)
         losses, aligns = soft_align(log_scores, self.allowed_skips_beg, self.allowed_skips_end, not self.learn_blank)
 
         pos_is_selected = (pos_log_scores > neg_log_scores.max(2, keepdim=True)[0]).view(batchSize*windowSize, self.nMatched, nPredicts)

@@ -10,10 +10,11 @@ REMOTE_USER=plgjch
 REMOTE_HOST=pro.cyfronet.pl
 
 # location of the main repository (contains data/)
-CPC_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+CPC_DIR=/pio/scratch/2/jch/wav2vec/CPC_audio  #"$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 REMOTE_CPC_DIR=/net/people/plgjch/scratch/CPC_audio
 REMOTE_MINICONDA_DIR=/net/archive/groups/plggneurony/os/miniconda3
 REMOTE_LIBRISPEECH_DIR=/net/archive/groups/plggneurony/data/librispeech/LibriSpeech
+REMOTE_LIBRISPEECH_DIR=/net/people/plgjch/lscratch/plgjch/LibriSpeech-wav
 REMOTE_LIBRISPEECH100_SPLITS=/net/archive/groups/plggneurony/data/librispeech/LibriSpeech100_labels_split
 
 # top-level directory for experiments
@@ -22,27 +23,43 @@ REMOTE_EXPERIMENT_RUNDIR=/net/scratch/people/plgjch/cpc/
 # adjust the main loop
 # (it can go over .yaml files, over hyperparameters, etc.
 
-# "--CPCCTCNumMatched 12 --nPredicts 8 --CPCCTCSkipEnd 0" \
 # "--CPCCTCNumMatched 12 --nPredicts 8 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 0" \
 # "--CPCCTCNumMatched 12 --nPredicts 8 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 3" \
 # "--CPCCTCNumMatched 12 --nPredicts 5 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 4" \
 # "--CPCCTCNumMatched 12 --nPredicts 8 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 4" \
 # "--CPCCTCNumMatched 20 --nPredicts 10 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 10" \
-# "--CPCCTCNumMatched 20 --nPredicts 7 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 19" \
-# "--CPCCTCNumMatched 30 --nPredicts 10 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 29" \
-# "--CPCCTCNumMatched 30 --nPredicts 15 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 29" \
 # "--CPCCTCNumMatched 30 --nPredicts 20 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 0" \
+# "--CPCCTCNumMatched 20 --nPredicts 7 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 7" \
+# "--CPCCTCNumMatched 30 --nPredicts 10 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 5" \
+# "--CPCCTCNumMatched 30 --nPredicts 10 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 10" \
+# "--CPCCTCNumMatched 30 --nPredicts 15 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 15" \
+
+
+# "--CPCCTCNumMatched 12 --nPredicts 8 --CPCCTCSkipBeg 0 --CPCCTCSkipEnd 0" \
+# "--CPCCTCNumMatched 12 --nPredicts 8 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 0" \
+# "--CPCCTCNumMatched 12 --nPredicts 8 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 0 --CPCCTCNoNegsMatchWin" \
+# "--CPCCTCNumMatched 12 --nPredicts 8 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 12" \
+# "--CPCCTCNumMatched 12 --nPredicts 10 --CPCCTCSkipBeg 0 --CPCCTCSkipEnd 0" \
+# "--CPCCTCNumMatched 15 --nPredicts 8 --CPCCTCSkipBeg 0 --CPCCTCSkipEnd 0" \
+# "--CPCCTCNumMatched 15 --nPredicts 10 --CPCCTCSkipBeg 0 --CPCCTCSkipEnd 0" \
+# "--CPCCTCNumMatched 15 --nPredicts 10 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 0" \
+# "--CPCCTCNumMatched 15 --nPredicts 10 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 15" \
+# "--CPCCTCNumMatched 15 --nPredicts 10 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 0 --CPCCTCNoNegsMatchWin" \
+# "--CPCCTCNumMatched 15 --nPredicts 10 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 15 --CPCCTCNoNegsMatchWin" \
+
 for PARAMS in \
-"--CPCCTCNumMatched 20 --nPredicts 7 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 7" \
-"--CPCCTCNumMatched 30 --nPredicts 10 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 5" \
-"--CPCCTCNumMatched 30 --nPredicts 10 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 10" \
-"--CPCCTCNumMatched 30 --nPredicts 15 --CPCCTCSelfLoop --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 15" \
+"--CPCCTCNumMatched 12 --nPredicts 8 --CPCCTCSkipBeg 0 --CPCCTCSkipEnd 12" \
+"--CPCCTCNumMatched 12 --nPredicts 6 --CPCCTCSkipBeg 0 --CPCCTCSkipEnd 12" \
+"--CPCCTCNumMatched 12 --nPredicts 10 --CPCCTCSkipBeg 0 --CPCCTCSkipEnd 12" \
+"--CPCCTCNumMatched 12 --nPredicts 8 --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 12" \
+"--CPCCTCNumMatched 12 --nPredicts 6 --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 12" \
+"--CPCCTCNumMatched 12 --nPredicts 10 --CPCCTCSkipBeg 1 --CPCCTCSkipEnd 12" \
 ; do
 
 # low-level directory for experiments
 EXP_TAG=remote_pro
 PRINT_PARAMS=$(echo $PARAMS | tr -d ' ' | sed -e 's/-\+/_/g')
-NAME=cpcctc${PRINT_PARAMS}
+NAME=test_cpcctc${PRINT_PARAMS}
 DIR=$EXP_TAG/$NAME
 EXP_DIR=$REMOTE_EXPERIMENT_RUNDIR/$DIR
 
@@ -92,13 +109,13 @@ export PYTHONPATH=$EXP_DIR/code
 
 python -u cpc/train.py \
     --pathCheckpoint $EXP_DIR \
-    --pathDB ${REMOTE_LIBRISPEECH_DIR}/train-clean-100 --file_extension .flac \
+    --pathDB ${REMOTE_LIBRISPEECH_DIR}/train-clean-100 --file_extension .wav \
     --pathTrain ${REMOTE_LIBRISPEECH100_SPLITS}/train_split.txt \
     --pathVal ${REMOTE_LIBRISPEECH100_SPLITS}/test_split.txt \
     --n_process_loader 1 --max_size_loaded 4000000000 --batchSizeGPU 32 \
     --normMode layerNorm --dropout --rnnMode transformer  --nLevelsGRU 2  \
     `#--schedulerRamp 10` --nEpoch 75 \
-    --CPCCTC --limitNegsInBatch 8  --CPCCTCNumMatched 12  --nPredicts $NPREDS $SELFLOOP 
+    --CPCCTC --limitNegsInBatch 8  $PARAMS
 
 CP=\$(ls $EXP_DIR/checkpoint*.pt | sed -e 's/.*_\([0-9]\+\).pt/\1/' | sort -n | tail -1)
 mkdir -p $EXP_DIR/lineval_\${CP}

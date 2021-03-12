@@ -39,6 +39,8 @@ def getCriterion(args, downsampling, nSpeakers, nPhones):
                                                         allowed_skips_end=args.CPCCTCSkipEnd,
                                                         predict_self_loop=args.CPCCTCSelfLoop,
                                                         learn_blank=args.CPCCTCLearnBlank,
+                                                        masq_rules=args.CPCCTCMasq,
+                                                        no_negs_in_match_window=args.CPCCTCNoNegsMatchWin,
                                                         limit_negs_in_batch=args.limitNegsInBatch,
                                                         mode=args.cpc_mode,
                                                         rnnMode=args.rnnMode,
@@ -392,6 +394,7 @@ def main(args):
             scheduler = utils.SchedulerCombiner([scheduler_ramp, scheduler],
                                                 [0, args.schedulerRamp])
     if scheduler is not None:
+        print(f'Redoing {len(logs["epoch"])} scheduler steps')
         for i in range(len(logs["epoch"])):
             scheduler.step()
 
