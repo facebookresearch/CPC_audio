@@ -248,7 +248,8 @@ def main(args):
 
     seqNames, speakers = findAllSeqs(args.pathDB,
                                      extension=args.file_extension,
-                                     loadCache=not args.ignore_cache)
+                                     loadCache=not args.ignore_cache,
+                                     speaker_level=args.speaker_level)
 
     print(f'Found files: {len(seqNames)} seqs, {len(speakers)} speakers')
     # Datasets
@@ -347,6 +348,8 @@ def main(args):
         if not os.path.isdir(args.pathCheckpoint):
             os.mkdir(args.pathCheckpoint)
         args.pathCheckpoint = os.path.join(args.pathCheckpoint, "checkpoint")
+        with open(args.pathCheckpoint + "_args.json", 'w') as file:
+            json.dump(vars(args), file, indent=2)
 
     scheduler = None
     if args.schedulerStep > 0:
@@ -415,6 +418,8 @@ def parseArgs(argv):
     group_db.add_argument('--max_size_loaded', type=int, default=4000000000,
                           help='Maximal amount of data (in byte) a dataset '
                           'can hold in memory at any given time')
+    group_db.add_argument('--speaker_level', type=int, default=1,
+                          help="Level of speaker in the training directory.")
     group_supervised = parser.add_argument_group(
         'Supervised mode (depreciated)')
     group_supervised.add_argument('--supervised', action='store_true',
