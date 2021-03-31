@@ -31,6 +31,9 @@ def set_default_cpc_config(parser):
     group.add_argument('--CPCCTCLearnBlank', action='store_true')
     group.add_argument('--CPCCTCNoNegsMatchWin', action='store_true')
     group.add_argument('--CPCCTCMasq', default="")
+    group.add_argument('--CPCCTCLossTemp', type=float, default=1.0)
+    group.add_argument('--CPCCTCNormalizeEncs', action='store_true')
+    group.add_argument('--CPCCTCNormalizePreds', action='store_true')
     group.add_argument('--limitNegsInBatch', type=int, default=0,
                        help='Limit the number of different seqs from whithc neg samples are taken.')
 

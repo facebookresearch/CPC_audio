@@ -146,6 +146,8 @@ class PredictionNetwork(nn.Module):
         return torch.cat(out, 3)
 
 
+
+
 class CPCUnsupersivedCriterion(BaseCriterion):
 
     def __init__(self,
@@ -159,7 +161,10 @@ class CPCUnsupersivedCriterion(BaseCriterion):
                  predict_self_loop=False, # always predict a repetition of the first symbol
                  no_negs_in_match_window=False,  # prevent sampling negatives from the matching window
                  learn_blank=False,       # try to use the blank symbol
+                 normalize_enc=False,
+                 normalize_preds=False,
                  masq_rules="",
+                 loss_temp=1.0,
                  limit_negs_in_batch=None,
                  mode=None,
                  rnnMode=False,
@@ -179,7 +184,9 @@ class CPCUnsupersivedCriterion(BaseCriterion):
         else:
             self.speakerEmb = None
 
-        
+        self.normalize_enc = normalize_enc
+        self.normalize_preds = normalize_preds
+        self.loss_temp = loss_temp
         self.nMatched = nMatched
         self.no_negs_in_match_window = no_negs_in_match_window
         self.wPrediction = PredictionNetwork(
@@ -278,7 +285,7 @@ class CPCUnsupersivedCriterion(BaseCriterion):
 
         # return outputs, labelLoss
 
-    def forward(self, cFeature, encodedData, label):
+    def forward(self, cFeature, encodedData, label, return_locals=False):
 
         if self.mode == "reverse":
             encodedData = torch.flip(encodedData, [1])
@@ -288,6 +295,9 @@ class CPCUnsupersivedCriterion(BaseCriterion):
         windowSize = seqSize - self.nMatched
 
         cFeature = cFeature[:, :windowSize]
+
+        if self.normalize_enc:
+            encodedData = F.layer_norm(encodedData, (encodedData.size(-1),))
 
         # sampledData, labelLoss = self.sampleClean(encodedData, windowSize)
         # negatives: BS x Len x NumNegs x D
@@ -316,6 +326,9 @@ class CPCUnsupersivedCriterion(BaseCriterion):
             predictions = torch.cat(
                 extra_preds, -1
             )
+
+        if self.normalize_preds:
+            predictions = F.layer_norm(predictions, (predictions.size(-1),))
         
         #predictions = torch.cat(predictions, 1).permute(0, 2, 3, 1)
 
@@ -347,12 +360,14 @@ class CPCUnsupersivedCriterion(BaseCriterion):
             dim=0)[0]
         
         log_scores = log_scores.view(batchSize*windowSize, self.nMatched, nPredicts)
+        # print('ls-stats', log_scores.mean().item(), log_scores.std().item())
         if self.masq_buffer is not None:
             masq_buffer = self.masq_buffer
             if extra_preds:
                 masq_buffer = torch.cat([masq_buffer[:, :, :1]] * (len(extra_preds) - 1) + [masq_buffer], dim=2)
             log_scores = log_scores.masked_fill(masq_buffer > 0, -1000)
-        losses, aligns = soft_align(log_scores, self.allowed_skips_beg, self.allowed_skips_end, not self.learn_blank)
+        losses, aligns = soft_align(log_scores / self.loss_temp, self.allowed_skips_beg, self.allowed_skips_end, not self.learn_blank)
+        losses = losses * self.loss_temp
 
         pos_is_selected = (pos_log_scores > neg_log_scores.max(2, keepdim=True)[0]).view(batchSize*windowSize, self.nMatched, nPredicts)
 
@@ -364,4 +379,7 @@ class CPCUnsupersivedCriterion(BaseCriterion):
         outLossesD = outLosses.detach()
         losses = losses.mean() / outLossesD.sum() * outLossesD
 
-        return losses, outAcc
+        if return_locals:
+            return losses, outAcc, locals()
+        else:
+            return losses, outAcc
