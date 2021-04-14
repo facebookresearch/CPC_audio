@@ -30,7 +30,10 @@ class FeatureModule(torch.nn.Module):
     def forward(self, data):
 
         batchAudio, label = data
-        cFeature, encoded, _ = self.featureMaker(batchAudio.cuda(), label)
+        if next(self.featureMaker.parameters()).is_cuda:
+            cFeature, encoded, _ = self.featureMaker(batchAudio.cuda(), label)
+        else:
+            cFeature, encoded, _ = self.featureMaker(batchAudio, label)
         if self.get_encoded:
             cFeature = encoded
         if self.collapse:
@@ -108,8 +111,12 @@ def getCheckpointData(pathDir):
         return None
     checkpoints.sort(key=lambda x: int(os.path.splitext(x[11:])[0]))
     data = os.path.join(pathDir, checkpoints[-1])
-    with open(os.path.join(pathDir, 'checkpoint_logs.json'), 'rb') as file:
-        logs = json.load(file)
+
+    if os.path.exists(os.path.join(pathDir, 'checkpoint_logs.json')):
+        with open(os.path.join(pathDir, 'checkpoint_logs.json'), 'rb') as file:
+            logs = json.load(file)
+    else:
+        logs = None
 
     with open(os.path.join(pathDir, 'checkpoint_args.json'), 'rb') as file:
         args = json.load(file)
@@ -153,7 +160,7 @@ def getAR(args):
     return arNet
 
 
-def loadModel(pathCheckpoints, loadStateDict=True):
+def loadModel(pathCheckpoints, loadStateDict=True, updateConfig=None):
     models = []
     hiddenGar, hiddenEncoder = 0, 0
     for path in pathCheckpoints:
@@ -164,8 +171,15 @@ def loadModel(pathCheckpoints, loadStateDict=True):
             (len(locArgs.load) > 1 or
              os.path.dirname(locArgs.load[0]) != os.path.dirname(path))
 
+        if updateConfig is not None and not doLoad:
+            print(f"Updating the configuartion file with ")
+            print(f'{json.dumps(vars(updateConfig), indent=4, sort_keys=True)}')
+            loadArgs(locArgs, updateConfig)
+
         if doLoad:
-            m_, hg, he = loadModel(locArgs.load, loadStateDict=False)
+            m_, hg, he = loadModel(locArgs.load, 
+                                   loadStateDict=False,
+                                   updateConfig=updateConfig)
             hiddenGar += hg
             hiddenEncoder += he
         else:
@@ -240,6 +254,10 @@ def buildFeature(featureMaker, seqPath, strict=False,
     Return:
         a torch vector of size 1 x Seq_size x Feature_dim
     """
+    if next(featureMaker.parameters()).is_cuda:
+        device = 'cuda'
+    else:
+        device = 'cpu'
     seq = torchaudio.load(seqPath)[0]
     sizeSeq = seq.size(1)
     start = 0
@@ -248,7 +266,7 @@ def buildFeature(featureMaker, seqPath, strict=False,
         if strict and start + maxSizeSeq > sizeSeq:
             break
         end = min(sizeSeq, start + maxSizeSeq)
-        subseq = (seq[:, start:end]).view(1, 1, -1).cuda(device=0)
+        subseq = (seq[:, start:end]).view(1, 1, -1).to(device)
         with torch.no_grad():
             features = featureMaker((subseq, None))
             if seqNorm:
@@ -257,7 +275,7 @@ def buildFeature(featureMaker, seqPath, strict=False,
         start += maxSizeSeq
 
     if strict and start < sizeSeq:
-        subseq = (seq[:, -maxSizeSeq:]).view(1, 1, -1).cuda(device=0)
+        subseq = (seq[:, -maxSizeSeq:]).view(1, 1, -1).to(device)
         with torch.no_grad():
             features = featureMaker((subseq, None))
             if seqNorm:
@@ -265,5 +283,71 @@ def buildFeature(featureMaker, seqPath, strict=False,
         delta = (sizeSeq - start) // featureMaker.getDownsamplingFactor()
         out.append(features[:, -delta:].detach().cpu())
 
+    out = torch.cat(out, dim=1)
+    return out
+
+
+def buildFeature_batch(featureMaker, seqPath, strict=False,
+                 maxSizeSeq=8000, seqNorm=False, batch_size=8):
+    r"""
+    Apply the featureMaker to the given file. Apply batch-computation
+    Arguments:
+        - featureMaker (FeatureModule): model to apply
+        - seqPath (string): path of the sequence to load
+        - strict (bool): if True, always work with chunks of the size
+                         maxSizeSeq
+        - maxSizeSeq (int): maximal size of a chunk
+        - seqNorm (bool): if True, normalize the output along the time
+                          dimension to get chunks of mean zero and var 1
+    Return:
+        a torch vector of size 1 x Seq_size x Feature_dim
+    """
+    if next(featureMaker.parameters()).is_cuda:
+        device = 'cuda'
+    else:
+        device = 'cpu'
+    seq = torchaudio.load(seqPath)[0]
+    sizeSeq = seq.size(1)
+    
+    # Compute number of batches
+    n_chunks = sizeSeq//maxSizeSeq
+    n_batches = n_chunks//batch_size
+    if n_chunks % batch_size != 0:
+        n_batches += 1
+    
+    out = []
+    # Treat each batch
+    for batch_idx in range(n_batches):
+        start =  batch_idx*batch_size*maxSizeSeq
+        end = min((batch_idx+1)*batch_size*maxSizeSeq, maxSizeSeq*n_chunks)
+        batch_seqs = (seq[:, start:end]).view(-1, 1, maxSizeSeq).to(device)
+        with torch.no_grad():
+            # breakpoint()
+            batch_out = featureMaker((batch_seqs, None))
+            for features in batch_out:
+                features = features.unsqueeze(0)
+                if seqNorm:
+                    features = seqNormalization(features)
+                out.append(features.detach().cpu())
+        
+    # Remaining frames
+    if sizeSeq % maxSizeSeq >= featureMaker.getDownsamplingFactor():
+        remainders = sizeSeq % maxSizeSeq
+        if strict:
+            subseq = (seq[:, -maxSizeSeq:]).view(1, 1, -1).to(device)
+            with torch.no_grad():
+                features = featureMaker((subseq, None))
+                if seqNorm:
+                    features = seqNormalization(features)
+            delta = remainders // featureMaker.getDownsamplingFactor()
+            out.append(features[:, -delta:].detach().cpu())
+        else:
+            subseq = (seq[:, -remainders:]).view(1, 1, -1).to(device)
+            with torch.no_grad():
+                features = featureMaker((subseq, None))
+                if seqNorm:
+                    features = seqNormalization(features)
+            out.append(features.detach().cpu())
+            
     out = torch.cat(out, dim=1)
     return out

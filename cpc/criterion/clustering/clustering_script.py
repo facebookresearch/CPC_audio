@@ -128,12 +128,12 @@ if __name__ == "__main__":
     print(f"Length of dataLoader: {len(trainLoader)}")
     print("")
 
-    #if args.level_gru is None:
-    #    updateConfig = None
-    #else:
-    #    updateConfig = argparse.Namespace(nLevelsGRU=args.level_gru)
+    if args.level_gru is None:
+        updateConfig = None
+    else:
+        updateConfig = argparse.Namespace(nLevelsGRU=args.level_gru)
 
-    model = loadModel([args.pathCheckpoint])[0]#, updateConfig=updateConfig)[0]
+    model = loadModel([args.pathCheckpoint][0], updateConfig=updateConfig)[0]
     featureMaker = FeatureModule(model, args.encoder_layer)
     print("Checkpoint loaded!")
     print("")

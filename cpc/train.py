@@ -165,13 +165,26 @@ def run(trainDataset,
         pathCheckpoint,
         optimizer,
         scheduler,
-        logs):
+        logs,
+        earlyStopping=False,
+        patience=5):
 
     print(f"Running {nEpoch} epochs")
     startEpoch = len(logs["epoch"])
     bestAcc = 0
     bestStateDict = None
     start_time = time.time()
+
+    def count_inverse(ls):
+        return sum([1 for i in range(len(ls)-1) if ls[i] > ls[i+1]])
+    
+    if "locAcc_val" in logs and len(logs["locAcc_val"]) > 0:
+        valAccuracyList = [100*np.mean(ls) for ls in logs['locAcc_val']]
+        if count_inverse(valAccuracyList) > patience:
+            print(f"The patience={patience} has been reached, early stopping activated. Stopped!")
+            return
+    else:
+        valAccuracyList = []
 
     for epoch in range(startEpoch, nEpoch):
 
@@ -198,6 +211,7 @@ def run(trainDataset,
         torch.cuda.empty_cache()
 
         currentAccuracy = float(locLogsVal["locAcc_val"].mean())
+        valAccuracyList.append(100*currentAccuracy)
         if currentAccuracy > bestAcc:
             bestStateDict = fl.get_module(cpcModel).state_dict()
 
@@ -220,6 +234,18 @@ def run(trainDataset,
                                optimizer.state_dict(), bestStateDict,
                                f"{pathCheckpoint}_{epoch}.pt")
             utils.save_logs(logs, pathCheckpoint + "_logs.json")
+
+            with open(os.path.join(os.path.dirname(pathCheckpoint), "valAcc_info.txt"), 'w') as file:
+                outLines = [f"Epoch {ep} : {acc}" for ep, acc in enumerate(valAccuracyList)] + [f"Best valAcc : checkpoint_{np.argmax(valAccuracyList)}"]
+                file.write("\n".join(outLines))
+
+        if earlyStopping:
+            if count_inverse(valAccuracyList) > patience:
+                print(f"Early stopping activated. Stopped at epoch {epoch}!")
+                with open(os.path.join(os.path.dirname(pathCheckpoint), "earlyStopping.txt"), 'a') as file:
+                    file.write(f"The patience={patience} has been reached, early stopping activated. Stopped at epoch {epoch}!\n")
+                break
+
 
 
 def main(args):
@@ -248,7 +274,8 @@ def main(args):
 
     seqNames, speakers = findAllSeqs(args.pathDB,
                                      extension=args.file_extension,
-                                     loadCache=not args.ignore_cache)
+                                     loadCache=not args.ignore_cache,
+                                     speaker_level=args.speaker_level)
 
     print(f'Found files: {len(seqNames)} seqs, {len(speakers)} speakers')
     # Datasets
@@ -347,6 +374,8 @@ def main(args):
         if not os.path.isdir(args.pathCheckpoint):
             os.mkdir(args.pathCheckpoint)
         args.pathCheckpoint = os.path.join(args.pathCheckpoint, "checkpoint")
+        with open(args.pathCheckpoint + "_args.json", 'w') as file:
+            json.dump(vars(args), file, indent=2)
 
     scheduler = None
     if args.schedulerStep > 0:
@@ -384,7 +413,9 @@ def main(args):
         args.pathCheckpoint,
         optimizer,
         scheduler,
-        logs)
+        logs,
+        args.early_stopping,
+        args.patience)
 
 
 def parseArgs(argv):
@@ -415,6 +446,8 @@ def parseArgs(argv):
     group_db.add_argument('--max_size_loaded', type=int, default=4000000000,
                           help='Maximal amount of data (in byte) a dataset '
                           'can hold in memory at any given time')
+    group_db.add_argument('--speaker_level', type=int, default=1,
+                          help="Level of speaker in the training directory.")
     group_supervised = parser.add_argument_group(
         'Supervised mode (depreciated)')
     group_supervised.add_argument('--supervised', action='store_true',
@@ -435,6 +468,8 @@ def parseArgs(argv):
     group_save.add_argument('--save_step', type=int, default=5,
                             help="Frequency (in epochs) at which a checkpoint "
                             "should be saved")
+    group_save.add_argument('--early_stopping', action='store_true')
+    group_save.add_argument('--patience', type=int, default=5)
 
     group_load = parser.add_argument_group('Load')
     group_load.add_argument('--load', type=str, default=None, nargs='*',
